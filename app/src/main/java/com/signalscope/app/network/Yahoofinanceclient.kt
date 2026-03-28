@@ -25,8 +25,9 @@ object YahooFinanceClient {
     private const val BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)   // hard cap — prevents hanging on partial responses
         .build()
 
     sealed class CandleResult {
@@ -71,25 +72,26 @@ object YahooFinanceClient {
 
             val response = client.newCall(request).execute()
 
-            when (response.code) {
-                429 -> {
-                    Log.w(TAG, "Yahoo Finance rate limited for $yahooSymbol")
-                    return CandleResult.RateLimited
+            response.use { resp ->
+                when (resp.code) {
+                    429 -> {
+                        Log.w(TAG, "Yahoo Finance rate limited for $yahooSymbol")
+                        return CandleResult.RateLimited
+                    }
+                    404 -> {
+                        Log.w(TAG, "Symbol not found: $yahooSymbol")
+                        return tryAlternateSuffix(symbol, exchange)
+                    }
+                    200 -> { /* continue */ }
+                    else -> {
+                        Log.w(TAG, "Yahoo Finance HTTP ${resp.code} for $yahooSymbol")
+                        return CandleResult.NoData
+                    }
                 }
-                404 -> {
-                    // Symbol not found on Yahoo — try alternate suffix
-                    Log.w(TAG, "Symbol not found: $yahooSymbol")
-                    return tryAlternateSuffix(symbol, exchange)
-                }
-                200 -> { /* continue */ }
-                else -> {
-                    Log.w(TAG, "Yahoo Finance HTTP ${response.code} for $yahooSymbol")
-                    return CandleResult.NoData
-                }
-            }
 
-            val body = response.body?.string() ?: return CandleResult.NoData
-            parseYahooResponse(body, yahooSymbol)
+                val body = resp.body?.string() ?: return CandleResult.NoData
+                parseYahooResponse(body, yahooSymbol)
+            }
 
         } catch (e: Exception) {
             val msg = e.message?.lowercase() ?: ""
@@ -205,8 +207,8 @@ object YahooFinanceClient {
      * Some Indian stocks have special characters that Yahoo handles differently.
      */
     fun toYahooSymbol(symbol: String, exchange: String = "NSE"): String {
-        // Already has a suffix — return as-is
-        if (symbol.contains(".")) return symbol
+        // Already has a suffix or is an index symbol (^NSEBANK, ^CNXIT, etc.) — return as-is
+        if (symbol.contains(".") || symbol.startsWith("^")) return symbol
 
         return when (exchange.uppercase()) {
             "BSE" -> "$symbol.BO"

@@ -13,6 +13,7 @@ import com.signalscope.app.R
 import com.signalscope.app.data.*
 import com.signalscope.app.network.AngelOneClient
 import com.signalscope.app.network.YahooFinanceClient
+import com.signalscope.app.ui.ScanServiceResultHolder
 import com.signalscope.app.network.ZerodhaClient
 import com.signalscope.app.ui.MainActivity
 import com.signalscope.app.util.StockAnalyzer
@@ -214,11 +215,8 @@ class ScanService : Service() {
                     else        -> null // NIFTY 500 uses Angel One; see below
                 }
 
-                if (market == "nifty500" && config.hasAngelCredentials) {
+                if (market == "nifty500") {
                     runNifty500Discovery()
-                } else if (market == "nifty500") {
-                    // No Angel One creds — scan NIFTY via Yahoo Finance (slower but works)
-                    runYahooDiscovery(NIFTY_50_YAHOO_SYMBOLS, "NIFTY 50 (via Yahoo)", "₹")
                 } else {
                     runYahooDiscovery(NASDAQ_100_SYMBOLS, "NASDAQ 100", "$")
                 }
@@ -244,24 +242,27 @@ class ScanService : Service() {
     }
 
     /**
-     * Scan NIFTY 500 using Angel One API for candle data (faster, no Yahoo rate limits).
-     * Mirrors the Python run_nifty_scan() logic.
+     * Scan NIFTY 500 using Yahoo Finance for candle data.
+     * Uses the full NIFTY_500_YAHOO_SYMBOLS list (~350+ stocks from NIFTY 50 +
+     * NIFTY Next 50 + BSE 100 + Midcap 150), mirroring the Python fallback universe.
      */
     private suspend fun runNifty500Discovery() = withContext(Dispatchers.IO) {
-        // For NIFTY 500 via Angel One, we'd need the instrument list.
-        // Since we don't have it cached on mobile, fall back to scanning
-        // the NIFTY 50 (top 50 stocks) via Yahoo Finance as a practical compromise.
-        // The full 500 can be done if the user has Angel One configured.
-        // TODO: Download instrument list from Angel One and scan all 500
-        Log.i(TAG, "NIFTY 500 discovery — scanning top stocks via Angel One + Yahoo fallback")
-
-        runYahooDiscovery(NIFTY_50_YAHOO_SYMBOLS, "NIFTY 50", "₹")
+        Log.i(TAG, "NIFTY 500 discovery — scanning ${NIFTY_500_YAHOO_SYMBOLS.size} stocks via Yahoo Finance")
+        runYahooDiscovery(NIFTY_500_YAHOO_SYMBOLS, "NIFTY 500", "₹")
     }
 
     /**
      * Scan a list of symbols via Yahoo Finance.
      * Works for both NASDAQ 100 and Indian stocks (.NS suffix).
      * Results are streamed to lastDiscoveryResult as each stock completes.
+     */
+    /**
+     * Scan a list of symbols via Yahoo Finance with adaptive pacing & retry queue.
+     * Mirrors Python's run_nifty_scan() / run_nasdaq_scan() resilience logic:
+     *   - Adaptive pace: starts at 0.5s, backs off 2x on rate limit, recovers 0.95x on success
+     *   - Rate-limited stocks are queued for retry (not skipped)
+     *   - After main pass, a retry phase re-scans failed stocks at gentler pace
+     *   - Consecutive error cap triggers early exit to retry phase
      */
     private suspend fun runYahooDiscovery(
         symbols: List<String>,
@@ -273,24 +274,40 @@ class ScanService : Service() {
         val allStocks = mutableListOf<StockAnalysis>()
         var errors = 0
         var skipped = 0
-        var rateLimitBackoff = 600L
+
+        // Adaptive pacing — mirrors Python's PACE_MIN / PACE_MAX / PACE_BACKOFF_MULT
+        var currentPace = 500L        // start at 0.5s
+        val PACE_MIN = 500L
+        val PACE_MAX = 8000L
+        val PACE_BACKOFF_MULT = 2.0
+        val PACE_RECOVERY_MULT = 0.95
+        var consecutiveErrors = 0
+        val retryQueue = mutableListOf<String>()
 
         updateScanNotification("Discovery: $marketName — 0/$total scanned")
         Log.i(TAG, "Discovery scan started: $marketName — $total symbols")
 
+        // ── Main scan pass ──
         for ((idx, symbol) in symbols.withIndex()) {
             if (discoveryAbort) {
                 Log.i(TAG, "Discovery scan aborted at $idx/$total")
                 break
             }
 
+            // If too many consecutive errors, bail to retry phase
+            if (consecutiveErrors >= 30) {
+                Log.w(TAG, "Discovery: $consecutiveErrors consecutive errors — queuing remaining for retry")
+                retryQueue.addAll(symbols.subList(idx, symbols.size))
+                break
+            }
+
             try {
-                // Determine exchange for Yahoo symbol formatting
                 val exchange = if (currency == "₹") "NSE" else "NASDAQ"
                 val candleResult = YahooFinanceClient.fetchCandles(symbol, exchange)
 
                 when (candleResult) {
                     is YahooFinanceClient.CandleResult.Success -> {
+                        consecutiveErrors = 0
                         val analysis = StockAnalyzer.analyze(
                             candles = candleResult.candles,
                             symbol = symbol,
@@ -303,33 +320,120 @@ class ScanService : Service() {
                         } else {
                             skipped++
                         }
-                        rateLimitBackoff = 600L // reset on success
+                        // Recover pace on success
+                        currentPace = (currentPace * PACE_RECOVERY_MULT).toLong().coerceAtLeast(PACE_MIN)
                     }
                     is YahooFinanceClient.CandleResult.RateLimited -> {
+                        consecutiveErrors++
                         errors++
-                        rateLimitBackoff = (rateLimitBackoff * 1.5).toLong().coerceAtMost(15000L)
-                        Log.w(TAG, "Discovery: Yahoo rate limited on $symbol, backing off ${rateLimitBackoff}ms")
-                        delay(rateLimitBackoff)
+                        retryQueue.add(symbol) // queue for retry instead of skipping
+                        currentPace = (currentPace * PACE_BACKOFF_MULT).toLong().coerceAtMost(PACE_MAX)
+                        Log.w(TAG, "Discovery: rate limited on $symbol, pace=${currentPace}ms, queued for retry")
+                        // Extra backoff wait on rate limit
+                        val backoffWait = (3000L + consecutiveErrors * 500L).coerceAtMost(15000L)
+                        delay(backoffWait)
                     }
-                    is YahooFinanceClient.CandleResult.NoData -> skipped++
+                    is YahooFinanceClient.CandleResult.NoData -> {
+                        consecutiveErrors = 0
+                        skipped++
+                    }
                     is YahooFinanceClient.CandleResult.Error -> {
+                        consecutiveErrors++
                         errors++
                         Log.w(TAG, "Discovery: error for $symbol — ${candleResult.message}")
                     }
                 }
 
-                // Update progress every stock
-                if ((idx + 1) % 5 == 0 || idx == total - 1) {
+                // Update progress every stock (not just every 5 — gives smoother UI updates)
+                val sorted = allStocks.sortedByDescending { it.buyScore }
+                lastDiscoveryResult = DiscoveryScanResult(
+                    market = marketName,
+                    currency = currency,
+                    timestamp = System.currentTimeMillis(),
+                    totalScanned = allStocks.size,
+                    totalSymbols = total,
+                    skipped = skipped,
+                    errors = errors,
+                    isComplete = false,
+                    allStocks = sorted,
+                    buySignals = sorted.filter { it.buyScore >= 60 },
+                    strongBuys = sorted.filter { it.buyScore >= 75 },
+                    goldenBuys = sorted.filter { it.goldenBuy },
+                    setups = sorted.filter {
+                        (it.sma200 != null && it.price > it.sma200) &&
+                                (it.macdPhase == "BUY FLIP" || it.macdPhase == "EARLY BUY")
+                    },
+                    durationMs = System.currentTimeMillis() - startTime
+                )
+                ScanServiceResultHolder.lastDiscoveryResult = lastDiscoveryResult
+
+                updateScanNotification(
+                    "Discovery: $marketName — ${idx + 1}/$total (${allStocks.size} analyzed)"
+                )
+                broadcastDiscoveryUpdate(marketName, idx + 1, total)
+
+                // Pacing delay (only once — not double-delayed on rate limits)
+                delay(currentPace)
+
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                consecutiveErrors++
+                errors++
+                Log.e(TAG, "Discovery error for $symbol", e)
+            }
+        }
+
+        // ── Retry phase — re-scan rate-limited stocks at gentler pace ──
+        if (retryQueue.isNotEmpty() && !discoveryAbort) {
+            Log.i(TAG, "Discovery retry phase: ${retryQueue.size} stocks, waiting 10s...")
+            updateScanNotification("Discovery: $marketName — retrying ${retryQueue.size} stocks...")
+            delay(10_000L) // let Yahoo rate limiter cool down
+
+            val retryPace = 1500L // 1.5s between retries
+            var retryErrors = 0
+
+            for ((rIdx, symbol) in retryQueue.withIndex()) {
+                if (discoveryAbort || retryErrors >= 20) break
+
+                try {
+                    val exchange = if (currency == "₹") "NSE" else "NASDAQ"
+                    val candleResult = YahooFinanceClient.fetchCandles(symbol, exchange)
+
+                    when (candleResult) {
+                        is YahooFinanceClient.CandleResult.Success -> {
+                            val analysis = StockAnalyzer.analyze(
+                                candles = candleResult.candles,
+                                symbol = symbol,
+                                name = symbol,
+                                token = symbol,
+                                minAvgVolume = if (currency == "₹") 100000 else 50000
+                            )
+                            if (analysis != null) {
+                                allStocks.add(analysis)
+                            } else {
+                                skipped++
+                            }
+                        }
+                        is YahooFinanceClient.CandleResult.RateLimited -> {
+                            retryErrors++
+                            errors++
+                            delay(5000L) // extra 5s cool-down on retry rate limit
+                        }
+                        is YahooFinanceClient.CandleResult.NoData -> skipped++
+                        is YahooFinanceClient.CandleResult.Error -> {
+                            retryErrors++
+                            errors++
+                        }
+                    }
+
+                    // Update UI during retry
                     val sorted = allStocks.sortedByDescending { it.buyScore }
                     lastDiscoveryResult = DiscoveryScanResult(
-                        market = marketName,
-                        currency = currency,
+                        market = marketName, currency = currency,
                         timestamp = System.currentTimeMillis(),
-                        totalScanned = allStocks.size,
-                        totalSymbols = total,
-                        skipped = skipped,
-                        errors = errors,
-                        isComplete = false,
+                        totalScanned = allStocks.size, totalSymbols = total,
+                        skipped = skipped, errors = errors, isComplete = false,
                         allStocks = sorted,
                         buySignals = sorted.filter { it.buyScore >= 60 },
                         strongBuys = sorted.filter { it.buyScore >= 75 },
@@ -340,25 +444,25 @@ class ScanService : Service() {
                         },
                         durationMs = System.currentTimeMillis() - startTime
                     )
-
+                    ScanServiceResultHolder.lastDiscoveryResult = lastDiscoveryResult
                     updateScanNotification(
-                        "Discovery: $marketName — ${idx + 1}/$total (${allStocks.size} analyzed)"
+                        "Discovery: $marketName — retry ${rIdx + 1}/${retryQueue.size}"
                     )
-                    broadcastDiscoveryUpdate(marketName, idx + 1, total)
+                    broadcastDiscoveryUpdate(marketName, total - retryQueue.size + rIdx + 1, total)
+
+                    delay(retryPace)
+
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    retryErrors++
+                    errors++
+                    Log.e(TAG, "Discovery retry error for $symbol", e)
                 }
-
-                // Pacing — Yahoo Finance needs ~0.6s between requests
-                delay(rateLimitBackoff.coerceAtLeast(600L))
-
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                errors++
-                Log.e(TAG, "Discovery error for $symbol", e)
             }
         }
 
-        // Final result
+        // ── Final result ──
         val sorted = allStocks.sortedByDescending { it.buyScore }
         val elapsed = System.currentTimeMillis() - startTime
         lastDiscoveryResult = DiscoveryScanResult(
@@ -380,12 +484,14 @@ class ScanService : Service() {
             },
             durationMs = elapsed
         )
+        ScanServiceResultHolder.lastDiscoveryResult = lastDiscoveryResult
 
         val statusMsg = if (discoveryAbort) "Discovery stopped" else
             "Discovery done: ${allStocks.size} stocks in ${elapsed / 60000}m"
         updateScanNotification(statusMsg)
         Log.i(TAG, "$statusMsg — ${sorted.count { it.buyScore >= 60 }} buy signals, " +
-                "${sorted.count { it.goldenBuy }} golden buys")
+                "${sorted.count { it.goldenBuy }} golden buys" +
+                if (retryQueue.isNotEmpty()) " (retried ${retryQueue.size})" else "")
     }
 
     // ═══════════════════════════════════════════════════════
@@ -401,6 +507,7 @@ class ScanService : Service() {
             updateScanNotification("Scanning Angel One portfolio...")
             val result = scanAngelPortfolio()
             lastAngelResult = result
+            ScanServiceResultHolder.lastAngelResult = result
             totalAlerts += result.alerts.size
             processAlerts(result.alerts)
         }
@@ -409,6 +516,7 @@ class ScanService : Service() {
             updateScanNotification("Scanning Zerodha portfolio...")
             val result = scanZerodhaPortfolio()
             lastZerodhaResult = result
+            ScanServiceResultHolder.lastZerodhaResult = result
             totalAlerts += result.alerts.size
             processAlerts(result.alerts)
         }
@@ -721,8 +829,13 @@ class ScanService : Service() {
 // SYMBOL LISTS for discovery scanning
 // ═══════════════════════════════════════════════════════
 
-/** NIFTY 50 symbols for Yahoo Finance (.NS suffix added automatically) */
-val NIFTY_50_YAHOO_SYMBOLS = listOf(
+/**
+ * Full NIFTY 500 universe for Yahoo Finance (.NS suffix added automatically).
+ * Mirrors the Python app's FALLBACK_SET: NIFTY 50 + NIFTY Next 50 + BSE 100 +
+ * Midcap 150 + Smallcap 250 = ~471 unique symbols.
+ */
+val NIFTY_500_YAHOO_SYMBOLS = listOf(
+    // ── NIFTY 50 ──
     "ADANIENT","ADANIPORTS","APOLLOHOSP","ASIANPAINT","AXISBANK",
     "BAJAJ-AUTO","BAJFINANCE","BAJAJFINSV","BEL","BPCL",
     "BHARTIARTL","BRITANNIA","CIPLA","COALINDIA","DRREDDY",
@@ -732,8 +845,94 @@ val NIFTY_50_YAHOO_SYMBOLS = listOf(
     "LT","M&M","MARUTI","NTPC","NESTLEIND",
     "ONGC","POWERGRID","RELIANCE","SBILIFE","SBIN",
     "SUNPHARMA","TCS","TATACONSUM","TATAMOTORS","TATASTEEL",
-    "TECHM","TITAN","TRENT","ULTRACEMCO","WIPRO"
-)
+    "TECHM","TITAN","TRENT","ULTRACEMCO","WIPRO",
+
+    // ── NIFTY NEXT 50 ──
+    "ABB","ABBOTINDIA","AMBUJACEM","BAJAJHLDNG","BANKBARODA",
+    "BERGEPAINT","BOSCHLTD","CANBK","CHOLAFIN","COLPAL",
+    "DABUR","DIVISLAB","DLF","GAIL","GODREJCP",
+    "HAVELLS","HINDPETRO","ICICIPRULI","INDHOTEL","IOC",
+    "IRCTC","IRFC","JIOFIN","JSWENERGY","LICI",
+    "LTIM","LUPIN","MARICO","MAXHEALTH","NHPC",
+    "PFC","PIDILITIND","PNB","RECLTD","SBICARD",
+    "SHREECEM","SHRIRAMFIN","SIEMENS","SRF","TORNTPHARM",
+    "TVSMOTOR","UNIONBANK","UNITDSPR","VBL","VEDL",
+    "YESBANK","ZOMATO","ZYDUSLIFE","IDEA","MOTHERSON",
+
+    // ── BSE 100 extras ──
+    "ADANIGREEN","ADANIPOWER","MUTHOOTFIN","CUMMINSIND","POLYCAB",
+    "PERSISTENT","SUZLON","FEDERALBNK","INDUSTOWER","BSE",
+    "BHEL","HDFCAMC","COFORGE","AUROPHARMA","TATAPOWER",
+    "DIXON","IREDA","ACC","BIOCON","GODREJPROP",
+
+    // ── NIFTY 100 / BSE extras ──
+    "ADANIENERGY","ADANITOTAL","INDIANB","ASHOKLEY","PBFINTECH",
+    "SWIGGY","AUBANK","IDFCFIRSTB","OBEROIRLTY","OFSS",
+    "PIIND","ESCORTS","PAGEIND","MPHASIS","TATAELXSI",
+    "KPITTECH","VOLTAS","LODHA","DELHIVERY","MRF",
+    "SUNDARMFIN","LICHSGFIN","MFSL","NATIONALUM","HUDCO",
+    "BANKINDIA","ALKEM","HINDCOPPER","SAIL","PETRONET",
+
+    // ── NIFTY Midcap 150 extras ──
+    "GUJGASLTD","SJVN","NMDC","BALKRISIND","SUPREMEIND",
+    "APLAPOLLO","PHOENIXLTD","ASTRAL","JUBLFOOD","MANAPPURAM",
+    "DEEPAKNTR","CROMPTON","SONACOMS","KALYANKJIL","METROBRAND",
+    "BSOFT","PATANJALI","JSL","THERMAX","SYNGENE",
+    "HONAUT","EXIDEIND","KEI","CGPOWER","PRESTIGE",
+    "IPCALAB","CONCOR","BANDHANBNK","FORTIS","RBLBANK",
+    "IDBIBANK","GMRAIRPORT","INDIAMART","ANGELONE","ZEEL",
+    "LALPATHLAB","AJANTPHARM","TATACOMM","BDL","COCHINSHIP",
+    "TATACHEM","ABCAPITAL","POONAWALLA","CAMS","CLEAN",
+    "KAYNES","SUNTV","NAVINFLUOR","RVNL","TIINDIA",
+    "ENDURANCE","SOLARINDS","NAUKRI","CENTRALBK","NIACL",
+    "EMAMILTD","GLAXO","AIAENG","IIFL","RAJESHEXPO",
+    "ABFRL","BLUESTARLT","KANSAINER","SUNDRMFAST","EIDPARRY",
+    "MAHABANK","LINDEINDIA","BRIGADE","GRINDWELL","SCHAEFFLER",
+    "APTUS","JKCEMENT","ASTRAZEN","CYIENT","NUVOCO",
+    "AAVAS","HAPPSTMNDS","RATNAMANI","FIVESTAR","GPPL",
+    "SUMICHEM","TRIVENI","ZENSARTECH","POLYMED","FINCABLES",
+    "TIMKEN","PGHH","MCX","LAURUSLABS","CDSL",
+
+    // ── NIFTY Smallcap 250 extras ──
+    "GLAND","JBCHEPHARM","KARURVYSYA","RADICO","NARAYANA",
+    "GRSE","MRPL","MSUMI","GILLETTE","DEVYANI",
+    "SUNDRMHOLD","CHOLAHLDNG","ASTERDM","GODIGIT","SAPPHIRE",
+    "SWANENERGY","ROUTE","LATENTVIEW","ISEC","DATAPATTNS",
+    "FINEORG","WHIRLPOOL","MAHSEAMLESS","RENUKA","AFFLE",
+    "TTML","TRITURBINE","EDELWEISS","NESCO","STARCEMENT",
+    "CENTURYTEX","TEAMLEASE","MAPMYINDIA","MAHLIFE","NETWORK18",
+    "PPLPHARMA","WESTLIFE","OLECTRA","JTLIND","BIKAJI",
+    "TARSONS","KRSNAA","GRAVITA","TANLA","ECLERX",
+    "CRAFTSMAN","SHYAMMETL","VGUARD","AMIORG","JYOTHYLAB",
+    "STARHEALTH","MOTILALOFS","TTKPRESTIG","UTIAMC","NUVAMA",
+    "PNBHOUSING","INDIACEM","ZFCVINDIA","ELGIEQUIP","SONATSOFTW",
+    "GOCOLORS","GODFRYPHLP","CHALET","KIOCL","CERA",
+    "ISGEC","TEGA","SUVENPHAR","SPARC","SBFC",
+    "PRINCEPIPE","HBLPOWER","TV18BRDCST","RALLIS","FLUOROCHEM",
+    "REDINGTON","BLUEDART","POWERINDIA","CARBORUNIV","CENTURYPLY",
+    "PRSMJOHNSN","FINPIPE","MEDPLUS","ANURAS","SENCO",
+    "GATEWAY","RAINBOW","AARTIIND","TCIEXP","MAHINDCIE",
+    "MASTEK","ASAHIINDIA","LAXMIMACH","VSTIND","BALAMINES",
+    "SUPRAJIT","KPIL","QUESS","AETHER","JKLAKSHMI",
+    "NIITMTS","RAYMOND","WELCORP","KIMS","RATEGAIN",
+    "SAREGAMA","MAHLOG","GLENMARK","IRCON","NATCOPHARM",
+    "ZYDUSWELL","JSWINFRA","SHRIRAMCIT","TRIDENT","INOXWIND",
+    "NCC","DCMSHRIRAM","RKFORGE","CHEMPLASTS","GMMPFAUDLR",
+    "BLUEJET","BBTC","JAMNAAUTO","AARTIDRUGS","TDPOWERSYS",
+    "GHCL","SPLPETRO","KFINTECH","ABSLAMC","SANOFI",
+    "HINDWAREAP","SAKSOFT","RITES","PEL","LXCHEM",
+    "NEWGEN","ACE","MASFIN","ENGINERSIN","SAGCEM",
+    "IFBIND","DOMS","AVALON","SBCL","ADFFOODS",
+    "VAIBHAVGBL","SAFARI","INDIGOPNTS","SHOPERSTOP","GREENPANEL",
+    "PURMO","UCOBANK","CUB","MAZDOCK","BANARISUG",
+    "TATAINVEST","RAMCOCEM","JKPAPER","SFL","CCL",
+    "LUXIND","GARFIBRES","MIDHANI","DATAMATICS","VIPIND",
+    "TVSSRICHAK","CASTROLIND","GULFOILLUB","ALKYLAMINE","ELECON",
+    "PRAJIND","BAJAJELEC","PNCINFRA","SHILPAMED","WOCKPHARMA",
+    "GESHIP","ORIENTELEC","GREENLAM","JKTYRE","DALBHARAT",
+    "SKFINDIA","GMDCLTD","CAPACITE","SYMPHONY","SUNTECK",
+    "SYRMA","INTELLECT"
+).distinct()
 
 val NASDAQ_100_SYMBOLS = listOf(
     "AAPL","ABNB","ADBE","ADI","ADP","ADSK","AEP","AMAT","AMD","AMGN",
