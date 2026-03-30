@@ -5,5 +5,5 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    <!-- Angel One API uses HTTPS, this is fine -->
+    <!-- All APIs use HTTPS -->
     </network-security-config>

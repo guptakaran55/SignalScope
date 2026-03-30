@@ -1,9 +1,20 @@
 -- Merging decision tree log ---
+provider#androidx.core.content.FileProvider
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:56:9-64:20
+	android:grantUriPermissions
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:60:13-47
+	android:authorities
+		INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:58:13-64
+	android:exported
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:59:13-37
+	android:name
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:57:13-62
 manifest
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-56:12
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-56:12
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-56:12
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-56:12
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-67:12
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-67:12
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-67:12
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-67:12
 MERGED from [androidx.databinding:viewbinding:8.13.2] C:\Users\gupta\.gradle\caches\8.13\transforms\2c48cb5317098618ef4ce38ea4f84a76\transformed\viewbinding-8.13.2\AndroidManifest.xml:2:1-7:12
 MERGED from [com.google.android.material:material:1.11.0] C:\Users\gupta\.gradle\caches\8.13\transforms\e0fceb7cd8008ae05c4826a419bc9de3\transformed\material-1.11.0\AndroidManifest.xml:17:1-24:12
 MERGED from [androidx.constraintlayout:constraintlayout:2.1.4] C:\Users\gupta\.gradle\caches\8.13\transforms\94c77ce074f3fa54e2590bc99734c93c\transformed\constraintlayout-2.1.4\AndroidManifest.xml:2:1-11:12
@@ -114,8 +125,8 @@ ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\sr
 	android:name
 		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:11:22-63
 application
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:13:5-55:19
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:13:5-55:19
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:13:5-66:19
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:13:5-66:19
 MERGED from [com.google.android.material:material:1.11.0] C:\Users\gupta\.gradle\caches\8.13\transforms\e0fceb7cd8008ae05c4826a419bc9de3\transformed\material-1.11.0\AndroidManifest.xml:22:5-20
 MERGED from [com.google.android.material:material:1.11.0] C:\Users\gupta\.gradle\caches\8.13\transforms\e0fceb7cd8008ae05c4826a419bc9de3\transformed\material-1.11.0\AndroidManifest.xml:22:5-20
 MERGED from [androidx.constraintlayout:constraintlayout:2.1.4] C:\Users\gupta\.gradle\caches\8.13\transforms\94c77ce074f3fa54e2590bc99734c93c\transformed\constraintlayout-2.1.4\AndroidManifest.xml:9:5-20
@@ -210,6 +221,12 @@ action#android.intent.action.QUICKBOOT_POWERON
 ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:51:17-82
 	android:name
 		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:51:25-79
+meta-data#android.support.FILE_PROVIDER_PATHS
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:61:13-63:54
+	android:resource
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:63:17-51
+	android:name
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:62:17-67
 uses-sdk
 INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml reason: use-sdk injection requested
 INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml

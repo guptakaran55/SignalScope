@@ -3,9 +3,7 @@ package com.signalscope.app.util
 import com.signalscope.app.data.CandleData
 import com.signalscope.app.data.StockAnalysis
 import kotlin.math.abs
-import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 /**
  * Analyzes a stock using 6 technical indicators and produces buy/sell scores.
@@ -39,7 +37,7 @@ object StockAnalyzer {
         val hasSma200 = n >= 200
         val hasSma50 = n >= 50
         val smaValues: List<Double?>
-        val smaLabel: String
+        @Suppress("unused") val smaLabel: String
         val smaMaxPts: Int
         val sma200Val: Double?
         val sma200Prev: Double?
@@ -141,6 +139,9 @@ object StockAnalyzer {
             macdPctl = ((cm - macd1yLow) / macdRange * 100).round(1)
         }
 
+        // ── MACD curve for sparkline (last 30 values) ──
+        val macdCurve = macdDropna.takeLast(30).map { it.round(4) }
+
         val macdZeroCrossUp = cm > 0 && cm < 0.15 && cmPrev <= 0
         val macdZeroCrossDn = cm < 0 && cm > -0.15 && cmPrev >= 0
 
@@ -194,7 +195,7 @@ object StockAnalyzer {
 
         // 2. MACD Inflection
         val goldenBuy = macdLowPct >= 60 && macdSlope <= 0.2 && sma200Slope > 0.1
-        var macdInfPts = when {
+        val macdInfPts = when {
             goldenBuy -> 30
             macdZeroCrossUp && macdAccel > 0 -> 30
             slopeCrossUp -> 20
@@ -243,12 +244,12 @@ object StockAnalyzer {
         if (ema21Val != null) {
             val d = ema21PctDiff
             emaPts = when {
-                d < -3 -> 3
-                d in -3.0..0.0 -> 8
-                d in 0.0..2.0 -> 10
-                d in 2.0..4.0 -> 5
-                d in 4.0..7.0 -> 2
-                else -> 0
+                d < -3 -> 3              // Deep pullback — risky, small reward
+                d in -3.0..0.0 -> 10     // Below EMA but trend intact — best entry (discount buy)
+                d in 0.0..2.0 -> 8       // Sitting near EMA — good entry
+                d in 2.0..4.0 -> 5       // Slightly stretched
+                d in 4.0..7.0 -> 2       // Stretched — wait for pullback
+                else -> 0                // Overextended — skip
             }
         }
         buyScore += emaPts
@@ -270,7 +271,7 @@ object StockAnalyzer {
         sellScore += smaSellPts
 
         // 2. MACD sell inflection
-        var sellMacdPts = when {
+        val sellMacdPts = when {
             macdZeroCrossDn && macdAccel < 0 -> 25
             slopeCrossDn -> 18
             earlySell -> 8
@@ -353,6 +354,7 @@ object StockAnalyzer {
             macdLowPct = macdLowPct,
             macd1yLow = macd1yLow.round(2),
             macdPhase = macdPhase,
+            macdCurve = macdCurve,
             adx = currAdx.round(2),
             plusDi = currPlusDi.round(1),
             minusDi = currMinusDi.round(1),

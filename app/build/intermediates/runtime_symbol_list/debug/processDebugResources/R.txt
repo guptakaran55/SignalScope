@@ -3278,10 +3278,8 @@ int id bounceStart 0x7f080069
 int id btnDiscoveryNasdaq 0x7f08006a
 int id btnDiscoveryNifty 0x7f08006b
 int id btnDiscoveryStop 0x7f08006c
-int id btnSave 0x7f08006d
 int id btnScanToggle 0x7f08006e
 int id btnSettings 0x7f08006f
-int id btnTestLogin 0x7f080070
 int id buttonPanel 0x7f080071
 int id cache_measures 0x7f080072
 int id callMeasure 0x7f080073
@@ -3423,13 +3421,6 @@ int id immediateStop 0x7f0800fa
 int id included 0x7f0800fb
 int id indeterminate 0x7f0800fc
 int id info 0x7f0800fd
-int id inputApiKey 0x7f0800fe
-int id inputClientId 0x7f0800ff
-int id inputPassword 0x7f080100
-int id inputScanInterval 0x7f080101
-int id inputSellThreshold 0x7f080102
-int id inputStrongSellThreshold 0x7f080103
-int id inputTotp 0x7f080104
 int id invisible 0x7f080105
 int id inward 0x7f080106
 int id is_pooling_container_tag 0x7f080107
@@ -3655,9 +3646,6 @@ int id submenuarrow 0x7f0801e2
 int id submit_area 0x7f0801e3
 int id supportScrollUp 0x7f0801e4
 int id swipeRefresh 0x7f0801e5
-int id switchMarketHours 0x7f0801e6
-int id switchNotifications 0x7f0801e7
-int id switchVibrate 0x7f0801e8
 int id switchWidget 0x7f0801e9
 int id tabDiscovery 0x7f0801ea
 int id tabMode 0x7f0801eb
@@ -3853,7 +3841,6 @@ int layout abc_search_view 0x7f0b0019
 int layout abc_select_dialog_material 0x7f0b001a
 int layout abc_tooltip 0x7f0b001b
 int layout activity_main 0x7f0b001c
-int layout activity_settings 0x7f0b001d
 int layout custom_dialog 0x7f0b001e
 int layout design_bottom_navigation_item 0x7f0b001f
 int layout design_bottom_sheet_dialog 0x7f0b0020
@@ -7522,4 +7509,5 @@ int styleable ViewTransition_upDuration 13
 int styleable ViewTransition_viewTransitionMode 14
 int[] styleable include { 0x7f03013b }
 int styleable include_constraintSet 0
+int xml file_paths 0x7f120001
 int xml network_security_config 0x7f120000

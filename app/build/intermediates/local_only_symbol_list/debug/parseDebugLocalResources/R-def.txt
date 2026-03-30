@@ -20,10 +20,8 @@ id alertsList
 id btnDiscoveryNasdaq
 id btnDiscoveryNifty
 id btnDiscoveryStop
-id btnSave
 id btnScanToggle
 id btnSettings
-id btnTestLogin
 id cardStatus
 id discoveryInfo
 id discoveryList
@@ -38,13 +36,6 @@ id holdSellScore
 id holdSymbol
 id holdVerdict
 id holdingsList
-id inputApiKey
-id inputClientId
-id inputPassword
-id inputScanInterval
-id inputSellThreshold
-id inputStrongSellThreshold
-id inputTotp
 id portfolioSection
 id statAlerts
 id statBuyScore
@@ -55,9 +46,6 @@ id statSub
 id statValue
 id statusDot
 id swipeRefresh
-id switchMarketHours
-id switchNotifications
-id switchVibrate
 id tabDiscovery
 id tabPortfolio
 id toolbar
@@ -67,7 +55,6 @@ id txtNoHoldings
 id txtScanInfo
 id txtStatus
 layout activity_main
-layout activity_settings
 layout item_alert
 layout item_holding
 layout stat_card
@@ -76,4 +63,5 @@ mipmap ic_launcher_foreground
 mipmap ic_launcher_round
 string app_name
 style Theme.SignalScope
+xml file_paths
 xml network_security_config

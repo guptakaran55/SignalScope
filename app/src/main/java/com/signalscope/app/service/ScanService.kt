@@ -4,14 +4,11 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.signalscope.app.R
 import com.signalscope.app.data.*
-import com.signalscope.app.network.AngelOneClient
 import com.signalscope.app.network.YahooFinanceClient
 import com.signalscope.app.ui.ScanServiceResultHolder
 import com.signalscope.app.network.ZerodhaClient
@@ -24,7 +21,7 @@ import java.util.*
  * Foreground Service with TWO scan modes:
  *
  * 1. PORTFOLIO MONITORING (automatic, market hours only)
- *    - Scans Angel One + Zerodha holdings every 15 min
+ *    - Scans Zerodha holdings every 15 min
  *    - Sends push notifications on sell signals
  *    - Gated by market hours (9:15–15:30 IST weekdays)
  *
@@ -66,7 +63,6 @@ class ScanService : Service() {
     }
 
     private lateinit var config: ConfigManager
-    private lateinit var angelClient: AngelOneClient
     private lateinit var zerodhaClient: ZerodhaClient
 
     private var portfolioJob: Job? = null
@@ -76,10 +72,19 @@ class ScanService : Service() {
 
     // 30-min cooldown per symbol+alert type
     private val recentAlerts = mutableMapOf<String, Long>()
-    private val ALERT_COOLDOWN_MS = 30 * 60 * 1000L
+    // Cooldown per urgency level — L5 repeats sooner, L1 much later
+    private fun alertCooldownMs(alertType: AlertType): Long = when (alertType) {
+        AlertType.STRONG_SELL         -> 15 * 60 * 1000L   // L5: 15 min — act NOW
+        AlertType.SELL_FLIP           -> 30 * 60 * 1000L   // L4: 30 min — inflection point
+        AlertType.TREND_BREAK         -> 2 * 60 * 60 * 1000L // L3: 2 hours — watch for confirmation
+        AlertType.BOOK_PROFIT         -> 4 * 60 * 60 * 1000L // L2: 4 hours — protect gains
+        AlertType.MODERATE_SELL       -> 4 * 60 * 60 * 1000L // L1: 4 hours — monitor
+        AlertType.CONSECUTIVE_DECLINE -> 8 * 60 * 60 * 1000L // L1: 8 hours — low priority
+        AlertType.GOLDEN_BUY          -> 2 * 60 * 60 * 1000L // Buy alert
+        AlertType.STRONG_BUY          -> 2 * 60 * 60 * 1000L // Buy alert
+    }
 
     // ── Results accessible from UI ──
-    var lastAngelResult: ScanResult? = null; private set
     var lastZerodhaResult: ScanResult? = null; private set
     var lastDiscoveryResult: DiscoveryScanResult? = null; private set
 
@@ -90,7 +95,6 @@ class ScanService : Service() {
     override fun onCreate() {
         super.onCreate()
         config = ConfigManager(this)
-        angelClient = AngelOneClient(config)
         zerodhaClient = ZerodhaClient(config)
         createNotificationChannels()
     }
@@ -210,11 +214,6 @@ class ScanService : Service() {
         discoveryJob?.cancel()
         discoveryJob = serviceScope.launch {
             try {
-                val symbols = when (market) {
-                    "nasdaq100" -> NASDAQ_100_SYMBOLS
-                    else        -> null // NIFTY 500 uses Angel One; see below
-                }
-
                 if (market == "nifty500") {
                     runNifty500Discovery()
                 } else {
@@ -274,6 +273,7 @@ class ScanService : Service() {
         val allStocks = mutableListOf<StockAnalysis>()
         var errors = 0
         var skipped = 0
+        var lastError = ""
 
         // Adaptive pacing — mirrors Python's PACE_MIN / PACE_MAX / PACE_BACKOFF_MULT
         var currentPace = 500L        // start at 0.5s
@@ -326,6 +326,7 @@ class ScanService : Service() {
                     is YahooFinanceClient.CandleResult.RateLimited -> {
                         consecutiveErrors++
                         errors++
+                        lastError = "Rate limited on $symbol — backing off ${currentPace}ms"
                         retryQueue.add(symbol) // queue for retry instead of skipping
                         currentPace = (currentPace * PACE_BACKOFF_MULT).toLong().coerceAtMost(PACE_MAX)
                         Log.w(TAG, "Discovery: rate limited on $symbol, pace=${currentPace}ms, queued for retry")
@@ -340,6 +341,7 @@ class ScanService : Service() {
                     is YahooFinanceClient.CandleResult.Error -> {
                         consecutiveErrors++
                         errors++
+                        lastError = "$symbol: ${candleResult.message}"
                         Log.w(TAG, "Discovery: error for $symbol — ${candleResult.message}")
                     }
                 }
@@ -354,6 +356,7 @@ class ScanService : Service() {
                     totalSymbols = total,
                     skipped = skipped,
                     errors = errors,
+                    lastError = lastError,
                     isComplete = false,
                     allStocks = sorted,
                     buySignals = sorted.filter { it.buyScore >= 60 },
@@ -380,6 +383,7 @@ class ScanService : Service() {
             } catch (e: Exception) {
                 consecutiveErrors++
                 errors++
+                lastError = "$symbol: ${e.message}"
                 Log.e(TAG, "Discovery error for $symbol", e)
             }
         }
@@ -433,7 +437,7 @@ class ScanService : Service() {
                         market = marketName, currency = currency,
                         timestamp = System.currentTimeMillis(),
                         totalScanned = allStocks.size, totalSymbols = total,
-                        skipped = skipped, errors = errors, isComplete = false,
+                        skipped = skipped, errors = errors, lastError = lastError, isComplete = false,
                         allStocks = sorted,
                         buySignals = sorted.filter { it.buyScore >= 60 },
                         strongBuys = sorted.filter { it.buyScore >= 75 },
@@ -473,6 +477,7 @@ class ScanService : Service() {
             totalSymbols = total,
             skipped = skipped,
             errors = errors,
+            lastError = lastError,
             isComplete = !discoveryAbort,
             allStocks = sorted,
             buySignals = sorted.filter { it.buyScore >= 60 },
@@ -495,87 +500,31 @@ class ScanService : Service() {
     }
 
     // ═══════════════════════════════════════════════════════
-    // FULL PORTFOLIO SCAN  (Angel One + Zerodha)
-    // Same as before — unchanged
+    // FULL PORTFOLIO SCAN  (Zerodha only)
     // ═══════════════════════════════════════════════════════
 
     private suspend fun runFullPortfolioScan() {
-        val source = config.portfolioSource
-        var totalAlerts = 0
-
-        if ((source == "angel" || source == "both") && config.hasAngelCredentials) {
-            updateScanNotification("Scanning Angel One portfolio...")
-            val result = scanAngelPortfolio()
-            lastAngelResult = result
-            ScanServiceResultHolder.lastAngelResult = result
-            totalAlerts += result.alerts.size
-            processAlerts(result.alerts)
+        if (!config.isZerodhaConnected) {
+            updateScanNotification("Zerodha not connected — open Settings")
+            broadcastUpdate()
+            return
         }
 
-        if ((source == "zerodha" || source == "both") && config.isZerodhaConnected) {
-            updateScanNotification("Scanning Zerodha portfolio...")
-            val result = scanZerodhaPortfolio()
-            lastZerodhaResult = result
-            ScanServiceResultHolder.lastZerodhaResult = result
-            totalAlerts += result.alerts.size
-            processAlerts(result.alerts)
-        }
+        updateScanNotification("Scanning Zerodha portfolio...")
+        val result = scanZerodhaPortfolio()
+        lastZerodhaResult = result
+        ScanServiceResultHolder.lastZerodhaResult = result
+        processAlerts(result.alerts)
 
         config.lastPortfolioScan = System.currentTimeMillis()
 
+        val totalAlerts = result.alerts.size
         val statusText = when {
             totalAlerts > 0 -> "⚠ $totalAlerts alert(s) — tap to view"
             else -> "✓ Portfolio OK — no sell signals"
         }
         updateScanNotification(statusText)
         broadcastUpdate()
-    }
-
-    private suspend fun scanAngelPortfolio(): ScanResult = withContext(Dispatchers.IO) {
-        val startTime = System.currentTimeMillis()
-        val alerts = mutableListOf<StockAlert>()
-        val scannedHoldings = mutableListOf<PortfolioHolding>()
-
-        val portfolioResult = angelClient.fetchPortfolio()
-        val rawHoldings = when (portfolioResult) {
-            is AngelOneClient.PortfolioResult.Success -> portfolioResult.holdings
-            is AngelOneClient.PortfolioResult.Failure -> {
-                Log.e(TAG, "Angel One portfolio failed: ${portfolioResult.message}")
-                return@withContext emptyScanResult("nifty500", startTime)
-            }
-        }
-
-        for (holding in rawHoldings) {
-            if (holding.token.isBlank()) continue
-            try {
-                val candleResult = angelClient.fetchCandleData(holding.token)
-                when (candleResult) {
-                    is AngelOneClient.CandleResult.Success -> {
-                        val analysis = StockAnalyzer.analyze(
-                            candles = candleResult.candles,
-                            symbol = holding.symbol, name = holding.symbol,
-                            token = holding.token, minAvgVolume = 0
-                        )
-                        val verdict = computeVerdict(analysis, holding.totalReturnPct)
-                        scannedHoldings.add(holding.copy(analysis = analysis, verdict = verdict))
-                        if (analysis != null) {
-                            generateAlerts(holding, analysis, holding.totalReturnPct, "angel")
-                                ?.let { alerts.addAll(it) }
-                        }
-                        delay(500)
-                    }
-                    is AngelOneClient.CandleResult.RateLimited -> {
-                        Log.w(TAG, "Angel One rate limited on ${holding.symbol}")
-                        delay(5_000)
-                    }
-                    else -> scannedHoldings.add(holding.copy(verdict = "NO DATA"))
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error analyzing Angel ${holding.symbol}", e)
-                scannedHoldings.add(holding.copy(verdict = "ERROR"))
-            }
-        }
-        buildScanResult("nifty500", startTime, scannedHoldings, alerts)
     }
 
     private suspend fun scanZerodhaPortfolio(): ScanResult = withContext(Dispatchers.IO) {
@@ -589,11 +538,11 @@ class ScanService : Service() {
             is ZerodhaClient.HoldingsResult.Expired -> {
                 config.zerodhaAccessToken = ""
                 sendZerodhaExpiredNotification()
-                return@withContext emptyScanResult("zerodha", startTime)
+                return@withContext emptyScanResult(startTime)
             }
             is ZerodhaClient.HoldingsResult.Failure -> {
                 Log.e(TAG, "Zerodha holdings failed: ${holdingsResult.message}")
-                return@withContext emptyScanResult("zerodha", startTime)
+                return@withContext emptyScanResult(startTime)
             }
         }
 
@@ -610,7 +559,7 @@ class ScanService : Service() {
                         val verdict = computeVerdict(analysis, holding.totalReturnPct)
                         scannedHoldings.add(holding.copy(analysis = analysis, verdict = verdict))
                         if (analysis != null) {
-                            generateAlerts(holding, analysis, holding.totalReturnPct, "zerodha")
+                            generateAlerts(holding, analysis, holding.totalReturnPct)
                                 ?.let { alerts.addAll(it) }
                         }
                         delay(600)
@@ -620,11 +569,11 @@ class ScanService : Service() {
                     }
                     else -> scannedHoldings.add(holding.copy(verdict = "NO DATA"))
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 scannedHoldings.add(holding.copy(verdict = "ERROR"))
             }
         }
-        buildScanResult("zerodha", startTime, scannedHoldings, alerts)
+        buildScanResult(startTime, scannedHoldings, alerts)
     }
 
     // ═══════════════════════════════════════════════════════
@@ -658,8 +607,9 @@ class ScanService : Service() {
 
     private fun generateAlerts(
         holding: PortfolioHolding, analysis: StockAnalysis,
-        returnPct: Double, source: String
+        returnPct: Double
     ): List<StockAlert>? {
+        val source = "zerodha"
         val alerts = mutableListOf<StockAlert>()
 
         if (analysis.sellScore >= config.strongSellAlertThreshold) {
@@ -692,14 +642,16 @@ class ScanService : Service() {
         if (analysis.sellScore >= 30 && returnPct >= 25.0) {
             alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
                 alertType = AlertType.BOOK_PROFIT,
-                message = "Unrealized gain ${String.format("%.1f", returnPct)}% + sell pressure building",
+                message = "Unrealized gain ${String.format(Locale.US, "%.1f", returnPct)}% + sell pressure building",
                 sellScore = analysis.sellScore, buyScore = analysis.buyScore,
                 price = analysis.price, macdPhase = analysis.macdPhase, source = source))
         }
-        if (analysis.upDays == 0 && analysis.priceVel < 0 && analysis.priceAccel < 0) {
+        // L1: Require 3+ down days AND meaningful drop (>1%) AND accelerating — avoids daily noise
+        if (analysis.upDays == 0 && analysis.priceVel < -1.0 && analysis.priceAccel < -0.3
+            && analysis.priceRoc3 < -3.0) {
             alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
                 alertType = AlertType.CONSECUTIVE_DECLINE,
-                message = "Price declining with accelerating momentum loss",
+                message = "3-day drop ${String.format(Locale.US, "%.1f", analysis.priceRoc3)}% with accelerating decline",
                 sellScore = analysis.sellScore, buyScore = analysis.buyScore,
                 price = analysis.price, macdPhase = analysis.macdPhase, source = source))
         }
@@ -709,10 +661,17 @@ class ScanService : Service() {
     private fun processAlerts(alerts: List<StockAlert>) {
         if (!config.notificationsEnabled) return
         val now = System.currentTimeMillis()
+
+        // Periodic cleanup: remove entries older than 24 hours to prevent unbounded growth
+        if (recentAlerts.size > 100) {
+            val dayAgo = now - 24 * 60 * 60 * 1000L
+            recentAlerts.entries.removeAll { it.value < dayAgo }
+        }
+
         for (alert in alerts) {
             val key = "${alert.symbol}_${alert.alertType}_${alert.source}"
             val lastAlerted = recentAlerts[key] ?: 0L
-            if (now - lastAlerted > ALERT_COOLDOWN_MS) {
+            if (now - lastAlerted > alertCooldownMs(alert.alertType)) {
                 sendAlertNotification(alert)
                 recentAlerts[key] = now
             }
@@ -749,33 +708,74 @@ class ScanService : Service() {
     }
 
     private fun sendAlertNotification(alert: StockAlert) {
-        val sourceLabel = if (alert.source == "zerodha") "[Zerodha] " else "[Angel] "
         val title = when (alert.alertType) {
-            AlertType.STRONG_SELL         -> "🔴 SELL: $sourceLabel${alert.symbol}"
-            AlertType.MODERATE_SELL       -> "🟡 Watch: $sourceLabel${alert.symbol}"
-            AlertType.SELL_FLIP           -> "⚠️ $sourceLabel${alert.symbol} momentum flip"
-            AlertType.TREND_BREAK         -> "📉 Trend Break: $sourceLabel${alert.symbol}"
-            AlertType.BOOK_PROFIT         -> "💰 Book Profit: $sourceLabel${alert.symbol}"
-            AlertType.CONSECUTIVE_DECLINE -> "📉 Declining: $sourceLabel${alert.symbol}"
+            AlertType.STRONG_SELL         -> "🔴 L5 SELL NOW: ${alert.symbol}"
+            AlertType.SELL_FLIP           -> "⚠️ L4 Momentum Flip: ${alert.symbol}"
+            AlertType.TREND_BREAK         -> "📉 L3 Trend Break: ${alert.symbol}"
+            AlertType.BOOK_PROFIT         -> "💰 L2 Book Profit: ${alert.symbol}"
+            AlertType.MODERATE_SELL       -> "🟡 L1 Watch: ${alert.symbol}"
+            AlertType.CONSECUTIVE_DECLINE -> "📉 L1 Declining: ${alert.symbol}"
             AlertType.GOLDEN_BUY          -> "⭐ Golden Buy: ${alert.symbol}"
             AlertType.STRONG_BUY          -> "🟢 Buy: ${alert.symbol}"
         }
         val priority = when (alert.alertType) {
-            AlertType.STRONG_SELL, AlertType.TREND_BREAK -> NotificationCompat.PRIORITY_MAX
-            AlertType.MODERATE_SELL, AlertType.SELL_FLIP  -> NotificationCompat.PRIORITY_HIGH
+            AlertType.STRONG_SELL         -> NotificationCompat.PRIORITY_MAX    // L5
+            AlertType.SELL_FLIP           -> NotificationCompat.PRIORITY_HIGH   // L4
+            AlertType.TREND_BREAK         -> NotificationCompat.PRIORITY_HIGH   // L3
+            AlertType.BOOK_PROFIT         -> NotificationCompat.PRIORITY_DEFAULT // L2
+            AlertType.MODERATE_SELL       -> NotificationCompat.PRIORITY_DEFAULT // L1
+            AlertType.CONSECUTIVE_DECLINE -> NotificationCompat.PRIORITY_LOW    // L1
             else -> NotificationCompat.PRIORITY_DEFAULT
         }
+        // Color tint for notification icon & header — visually distinguishes urgency
+        val alertColor = when (alert.alertType) {
+            AlertType.STRONG_SELL         -> 0xFFDC2626.toInt()  // L5: Red
+            AlertType.SELL_FLIP           -> 0xFFF97316.toInt()  // L4: Orange
+            AlertType.TREND_BREAK         -> 0xFFEAB308.toInt()  // L3: Yellow
+            AlertType.BOOK_PROFIT         -> 0xFF8B5CF6.toInt()  // L2: Purple
+            AlertType.MODERATE_SELL       -> 0xFF64748B.toInt()  // L1: Slate grey
+            AlertType.CONSECUTIVE_DECLINE -> 0xFF64748B.toInt()  // L1: Slate grey
+            AlertType.GOLDEN_BUY          -> 0xFFD97706.toInt()  // Gold
+            AlertType.STRONG_BUY          -> 0xFF059669.toInt()  // Green
+        }
+
+        val levelTag = when (alert.alertType) {
+            AlertType.STRONG_SELL         -> "⏱ Act within hours"
+            AlertType.SELL_FLIP           -> "⏱ Act within 1-2 days"
+            AlertType.TREND_BREAK         -> "⏱ Watch 2-5 days for confirmation"
+            AlertType.BOOK_PROFIT         -> "⏱ Consider over coming days"
+            AlertType.MODERATE_SELL       -> "⏱ Monitor over days"
+            AlertType.CONSECUTIVE_DECLINE -> "⏱ Low urgency — monitor"
+            else -> ""
+        }
+
+        val bigBody = buildString {
+            append(alert.message)
+            append("\n₹${String.format(Locale.US, "%.2f", alert.price)} · Sell ${alert.sellScore} · ${alert.macdPhase}")
+            if (levelTag.isNotEmpty()) append("\n$levelTag")
+        }
+
         val pi = PendingIntent.getActivity(this, alert.symbol.hashCode(),
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, CHANNEL_ALERTS)
             .setContentTitle(title).setContentText(alert.message)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "${alert.message}\n₹${String.format("%.2f", alert.price)} · Sell ${alert.sellScore} · ${alert.macdPhase}"))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigBody))
             .setSmallIcon(android.R.drawable.ic_dialog_alert).setContentIntent(pi)
+            .setColor(alertColor)
+            .setColorized(alert.alertType == AlertType.STRONG_SELL) // L5 gets fully colored background
             .setPriority(priority).setAutoCancel(true)
             .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
-            .apply { if (config.vibrateOnAlerts) setVibrate(longArrayOf(0, 250, 100, 250)) }
+            .apply {
+                if (config.vibrateOnAlerts) {
+                    when (alert.alertType) {
+                        AlertType.STRONG_SELL -> setVibrate(longArrayOf(0, 400, 150, 400, 150, 400)) // L5: urgent triple buzz
+                        AlertType.SELL_FLIP   -> setVibrate(longArrayOf(0, 300, 100, 300))           // L4: double buzz
+                        AlertType.TREND_BREAK -> setVibrate(longArrayOf(0, 250, 100, 250))           // L3: double buzz
+                        else -> {}  // L2/L1: silent — no vibration for low urgency
+                    }
+                }
+            }
             .build()
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .notify(alert.symbol.hashCode() + 1000, notification)
@@ -810,18 +810,18 @@ class ScanService : Service() {
     // HELPERS
     // ═══════════════════════════════════════════════════════
 
-    private fun buildScanResult(market: String, startTime: Long,
+    private fun buildScanResult(startTime: Long,
                                 holdings: List<PortfolioHolding>, alerts: List<StockAlert>): ScanResult {
         val totalInvested = holdings.sumOf { it.invested }
         val totalCurrent = holdings.sumOf { it.currentVal }
-        return ScanResult(market = market, startTime = startTime, totalScanned = holdings.size,
+        return ScanResult(market = "zerodha", startTime = startTime, totalScanned = holdings.size,
             holdings = holdings, alerts = alerts, durationMs = System.currentTimeMillis() - startTime,
             totalInvested = totalInvested, totalCurrent = totalCurrent, totalPnl = totalCurrent - totalInvested,
             sellAlertCount = alerts.count { it.alertType == AlertType.STRONG_SELL || it.alertType == AlertType.MODERATE_SELL })
     }
 
-    private fun emptyScanResult(market: String, startTime: Long) = ScanResult(
-        market = market, startTime = startTime, totalScanned = 0,
+    private fun emptyScanResult(startTime: Long) = ScanResult(
+        market = "zerodha", startTime = startTime, totalScanned = 0,
         holdings = emptyList(), alerts = emptyList(), durationMs = System.currentTimeMillis() - startTime)
 }
 

@@ -3279,10 +3279,8 @@ id bounceStart
 id btnDiscoveryNasdaq
 id btnDiscoveryNifty
 id btnDiscoveryStop
-id btnSave
 id btnScanToggle
 id btnSettings
-id btnTestLogin
 id buttonPanel
 id cache_measures
 id callMeasure
@@ -3424,13 +3422,6 @@ id immediateStop
 id included
 id indeterminate
 id info
-id inputApiKey
-id inputClientId
-id inputPassword
-id inputScanInterval
-id inputSellThreshold
-id inputStrongSellThreshold
-id inputTotp
 id invisible
 id inward
 id is_pooling_container_tag
@@ -3656,9 +3647,6 @@ id submenuarrow
 id submit_area
 id supportScrollUp
 id swipeRefresh
-id switchMarketHours
-id switchNotifications
-id switchVibrate
 id switchWidget
 id tabDiscovery
 id tabMode
@@ -3854,7 +3842,6 @@ layout abc_search_view
 layout abc_select_dialog_material
 layout abc_tooltip
 layout activity_main
-layout activity_settings
 layout custom_dialog
 layout design_bottom_navigation_item
 layout design_bottom_sheet_dialog
@@ -5456,4 +5443,5 @@ styleable ViewPager2 android_orientation
 styleable ViewStubCompat android_id android_layout android_inflatedId
 styleable ViewTransition android_id SharedValue SharedValueId clearsTag duration ifTagNotSet ifTagSet motionInterpolator motionTarget onStateTransition pathMotionArc setsTag transitionDisable upDuration viewTransitionMode
 styleable include constraintSet
+xml file_paths
 xml network_security_config

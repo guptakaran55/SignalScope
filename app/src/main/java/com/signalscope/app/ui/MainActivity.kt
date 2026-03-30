@@ -7,13 +7,11 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.webkit.*
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -23,9 +21,9 @@ import com.google.android.material.button.MaterialButton
 import com.google.gson.Gson
 import com.signalscope.app.data.ConfigManager
 import com.signalscope.app.data.DiscoveryScanResult
-import com.signalscope.app.data.StockAnalysis
 import com.signalscope.app.service.ScanService
 import com.signalscope.app.network.YahooFinanceClient
+import com.signalscope.app.network.StockAiClient
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
@@ -59,17 +57,6 @@ class MainActivity : AppCompatActivity() {
 
     private val gson = Gson()
     private var isServiceRunning = false
-    private var boundService: ScanService? = null
-    private var isBound = false
-
-    // Service connection for reading scan results directly
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            // ScanService doesn't use binding currently — we use broadcasts instead
-            // If you add a Binder later, connect here
-        }
-        override fun onServiceDisconnected(name: ComponentName?) {}
-    }
 
     private val scanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -91,11 +78,14 @@ class MainActivity : AppCompatActivity() {
                         btnStop.visibility = View.GONE
                         refreshStatusBar()
                     } else {
-                        // In-progress — push results + update progress on every broadcast
-                        pushDiscoveryResultsToWebView()
+                        // In-progress — update progress bar every stock, but only push
+                        // full table data every 25 stocks to avoid churning 700KB×500 times
                         webView.evaluateJavascript(
                             "window.updateProgress($progress, $total, '${market.replace("'", "\\'")}')", null
                         )
+                        if (progress % 25 == 0 || progress <= 3) {
+                            pushDiscoveryResultsToWebView()
+                        }
                     }
                 }
             }
@@ -120,7 +110,7 @@ class MainActivity : AppCompatActivity() {
             addAction(ScanService.BROADCAST_SCAN_UPDATE)
             addAction(ScanService.BROADCAST_DISCOVERY_UPDATE)
         }
-        registerReceiver(scanReceiver, filter, RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(this, scanReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         isServiceRunning = config.serviceRunning
         refreshStatusBar()
 
@@ -143,14 +133,14 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF0a0f1e.toInt())
+            setBackgroundColor(0xFFf8fafc.toInt())
         }
 
         // ── Top bar: status + controls ──
         controlBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            setBackgroundColor(0xFF0f1629.toInt())
+            setBackgroundColor(0xFFffffff.toInt())
         }
 
         // Status row
@@ -174,7 +164,7 @@ class MainActivity : AppCompatActivity() {
         txtStatus = TextView(this).apply {
             text = "SignalScope"
             textSize = 14f
-            setTextColor(0xFFf1f5f9.toInt())
+            setTextColor(0xFF0f172a.toInt())
             setTypeface(null, android.graphics.Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -215,7 +205,7 @@ class MainActivity : AppCompatActivity() {
         btnNifty = MaterialButton(this).apply {
             text = "🇮🇳 NIFTY 500"
             textSize = 11f; isAllCaps = false
-            setBackgroundColor(0xFF1e3a5f.toInt())
+            setBackgroundColor(0xFF2563eb.toInt())
             cornerRadius = dp(8)
             layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(4) }
         }
@@ -224,7 +214,7 @@ class MainActivity : AppCompatActivity() {
         btnNasdaq = MaterialButton(this).apply {
             text = "🇺🇸 NASDAQ 100"
             textSize = 11f; isAllCaps = false
-            setBackgroundColor(0xFF1e3a5f.toInt())
+            setBackgroundColor(0xFF2563eb.toInt())
             cornerRadius = dp(8)
             layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(4) }
         }
@@ -251,7 +241,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
             )
-            setBackgroundColor(0xFF0a0f1e.toInt())
+            setBackgroundColor(0xFFf8fafc.toInt())
         }
         root.addView(webView)
 
@@ -335,9 +325,85 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun openDocumentation() {
+            runOnUiThread {
+                try {
+                    // Copy PDF from assets to cache dir so it can be opened via FileProvider/Intent
+                    val pdfFile = java.io.File(cacheDir, "SignalScope_Documentation.pdf")
+                    assets.open("SignalScope_Documentation.pdf").use { input ->
+                        pdfFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        this@MainActivity,
+                        "$packageName.fileprovider",
+                        pdfFile
+                    )
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "application/pdf")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(intent, "Open Documentation"))
+                } catch (e: Exception) {
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "No PDF viewer found. Install a PDF reader app.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
+        @JavascriptInterface
         fun getLastScanTime(): String {
             val ts = config.lastPortfolioScan
             return if (ts > 0) SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(ts)) else "Never"
+        }
+
+        @JavascriptInterface
+        fun hasAiEnabled(): Boolean = config.hasLlmCredentials
+
+        /** Called from detail modal — analyzes why a stock has pulled back */
+        @JavascriptInterface
+        fun analyzePullback(symbol: String, price: Double, ema21PctDiff: Double,
+                            macdPhase: String, sellScore: Int) {
+            thread(isDaemon = true) {
+                val result = StockAiClient.analyzePullback(
+                    config, symbol, price, ema21PctDiff, macdPhase, sellScore
+                )
+                val text = when (result) {
+                    is StockAiClient.AiResult.Success -> result.text
+                    is StockAiClient.AiResult.Error -> "⚠ ${result.message}"
+                }
+                val escaped = text.replace("\\", "\\\\").replace("'", "\\'")
+                    .replace("\n", "\\n").replace("\r", "")
+                runOnUiThread {
+                    webView.evaluateJavascript("window.onPullbackResult('$escaped')", null)
+                }
+            }
+        }
+
+        /** Called from detail modal — full stock outlook analysis */
+        @JavascriptInterface
+        fun analyzeOutlook(symbol: String, price: Double, buyScore: Int, sellScore: Int,
+                           macdPhase: String, macdSlope: Double, rsi: Double,
+                           sma200: Double, ema21PctDiff: Double, rrRatio: Double, priceVel: Double) {
+            thread(isDaemon = true) {
+                val result = StockAiClient.analyzeOutlook(
+                    config, symbol, price, buyScore, sellScore, macdPhase,
+                    macdSlope, if (rsi == 0.0) null else rsi,
+                    if (sma200 == 0.0) null else sma200,
+                    ema21PctDiff, rrRatio, priceVel
+                )
+                val text = when (result) {
+                    is StockAiClient.AiResult.Success -> result.text
+                    is StockAiClient.AiResult.Error -> "⚠ ${result.message}"
+                }
+                val escaped = text.replace("\\", "\\\\").replace("'", "\\'")
+                    .replace("\n", "\\n").replace("\r", "")
+                runOnUiThread {
+                    webView.evaluateJavascript("window.onOutlookResult('$escaped')", null)
+                }
+            }
         }
     }
 
@@ -347,7 +413,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupButtons() {
         btnMonitor.setOnClickListener {
-            if (!config.hasCredentials && !config.isZerodhaConnected) {
+            if (!config.isZerodhaConnected) {
                 Toast.makeText(this, "Configure credentials in Settings first", Toast.LENGTH_LONG).show()
                 startActivity(Intent(this, SettingsActivity::class.java))
                 return@setOnClickListener
@@ -422,6 +488,9 @@ class MainActivity : AppCompatActivity() {
                 "allStocks" to result.allStocks,
                 "market" to result.market,
                 "currency" to result.currency,
+                "errors" to result.errors,
+                "skipped" to result.skipped,
+                "lastError" to result.lastError,
                 "isScanning" to !result.isComplete,
                 "progress" to if (!result.isComplete) mapOf(
                     "current" to result.totalScanned,
@@ -438,41 +507,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pushPortfolioResultsToWebView() {
-        val zerodha = ScanServiceResultHolder.lastZerodhaResult
-        val angel = ScanServiceResultHolder.lastAngelResult
-        // Combine holdings from both sources
+        val zerodha = ScanServiceResultHolder.lastZerodhaResult ?: return
         val allHoldings = mutableListOf<Map<String, Any?>>()
 
-        fun addHoldings(result: com.signalscope.app.data.ScanResult?, source: String) {
-            result?.holdings?.forEach { h ->
-                val a = h.analysis
-                allHoldings.add(mapOf(
-                    "symbol" to h.symbol,
-                    "exchange" to h.exchange,
-                    "quantity" to h.quantity,
-                    "avgPrice" to h.avgPrice,
-                    "ltp" to h.ltp,
-                    "pnl" to h.pnl,
-                    "dayChange" to h.dayChange,
-                    "dayChangePct" to h.dayChangePct,
-                    "invested" to h.invested,
-                    "currentVal" to h.currentVal,
-                    "totalReturnPct" to h.totalReturnPct,
-                    "source" to source,
-                    "verdict" to h.verdict,
-                    "buyScore" to (a?.buyScore ?: 0),
-                    "sellScore" to (a?.sellScore ?: 0),
-                    "macdPhase" to (a?.macdPhase ?: "—"),
-                    "macdSlope" to (a?.macdSlope ?: 0.0),
-                    "buySignal" to (a?.buySignal ?: "—"),
-                    "sellSignal" to (a?.sellSignal ?: "—"),
-                    "hasAnalysis" to (a != null)
-                ))
-            }
+        zerodha.holdings.forEach { h ->
+            val a = h.analysis
+            allHoldings.add(mapOf(
+                "symbol" to h.symbol,
+                "exchange" to h.exchange,
+                "quantity" to h.quantity,
+                "avgPrice" to h.avgPrice,
+                "ltp" to h.ltp,
+                "pnl" to h.pnl,
+                "dayChange" to h.dayChange,
+                "dayChangePct" to h.dayChangePct,
+                "invested" to h.invested,
+                "currentVal" to h.currentVal,
+                "totalReturnPct" to h.totalReturnPct,
+                "source" to "zerodha",
+                "verdict" to h.verdict,
+                "buyScore" to (a?.buyScore ?: 0),
+                "sellScore" to (a?.sellScore ?: 0),
+                "macdPhase" to (a?.macdPhase ?: "—"),
+                "macdSlope" to (a?.macdSlope ?: 0.0),
+                "macdCurve" to (a?.macdCurve ?: emptyList<Double>()),
+                "buySignal" to (a?.buySignal ?: "—"),
+                "sellSignal" to (a?.sellSignal ?: "—"),
+                "hasAnalysis" to (a != null)
+            ))
         }
-
-        addHoldings(zerodha, "zerodha")
-        addHoldings(angel, "angel")
 
         if (allHoldings.isEmpty()) return
 
@@ -547,6 +610,9 @@ class MainActivity : AppCompatActivity() {
                             val high = candles.takeLast(120).maxOfOrNull { it.high } ?: latest.high
                             val low = candles.takeLast(120).minOfOrNull { it.low } ?: latest.low
 
+                            // Last 60 closing prices for sparkline chart
+                            val closesForChart = candles.takeLast(60).map { it.close }
+
                             sectors.add(mapOf(
                                 "name" to name,
                                 "index" to index,
@@ -555,7 +621,8 @@ class MainActivity : AppCompatActivity() {
                                 "dayChange" to dayChange,
                                 "periodChange" to periodChange,
                                 "high" to high,
-                                "low" to low
+                                "low" to low,
+                                "closes" to closesForChart
                             ))
                         }
                         Thread.sleep(600) // pace requests
@@ -598,7 +665,7 @@ class MainActivity : AppCompatActivity() {
             btnMonitor.text = "▶  Start Monitoring"
             btnMonitor.setBackgroundColor(0xFF059669.toInt())
             txtStatus.text = "SignalScope"
-            txtStatus.setTextColor(0xFFf1f5f9.toInt())
+            txtStatus.setTextColor(0xFF0f172a.toInt())
         }
     }
 
@@ -627,6 +694,8 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {}
     }
 
+    @Suppress("DEPRECATION")
+    @Deprecated("Use OnBackPressedCallback", ReplaceWith("onBackPressedDispatcher"))
     override fun onBackPressed() {
         // If modal is open in WebView, close it instead of exiting
         webView.evaluateJavascript(
@@ -648,5 +717,4 @@ class MainActivity : AppCompatActivity() {
 object ScanServiceResultHolder {
     @Volatile var lastDiscoveryResult: DiscoveryScanResult? = null
     @Volatile var lastZerodhaResult: com.signalscope.app.data.ScanResult? = null
-    @Volatile var lastAngelResult: com.signalscope.app.data.ScanResult? = null
 }

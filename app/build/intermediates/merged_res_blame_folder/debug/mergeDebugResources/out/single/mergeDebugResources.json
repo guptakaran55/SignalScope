@@ -88,10 +88,6 @@
         "source": "C:\\Users\\gupta\\.gradle\\daemon\\8.13\\com.signalscope.app-main-53:\\mipmap-hdpi\\ic_launcher.webp"
     },
     {
-        "merged": "com.signalscope.app-debug-51:/layout_activity_main.xml.flat",
-        "source": "com.signalscope.app-main-53:/layout/activity_main.xml"
-    },
-    {
         "merged": "C:\\Users\\gupta\\.gradle\\daemon\\8.13\\com.signalscope.app-debug-51:\\mipmap-xhdpi_ic_launcher.webp.flat",
         "source": "C:\\Users\\gupta\\.gradle\\daemon\\8.13\\com.signalscope.app-main-53:\\mipmap-xhdpi\\ic_launcher.webp"
     },
@@ -118,6 +114,10 @@
     {
         "merged": "C:\\Users\\gupta\\.gradle\\daemon\\8.13\\com.signalscope.app-debug-51:\\drawable_badge_sell_bg.xml.flat",
         "source": "C:\\Users\\gupta\\.gradle\\daemon\\8.13\\com.signalscope.app-main-53:\\drawable\\badge_sell_bg.xml"
+    },
+    {
+        "merged": "com.signalscope.app-debug-51:/xml_file_paths.xml.flat",
+        "source": "com.signalscope.app-main-53:/xml/file_paths.xml"
     },
     {
         "merged": "C:\\Users\\gupta\\.gradle\\daemon\\8.13\\com.signalscope.app-debug-51:\\mipmap-mdpi_ic_launcher_round.webp.flat",

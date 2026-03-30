@@ -21,16 +21,6 @@ data class CandleData(
 )
 
 // ═══════════════════════════════════════════════════════
-// SESSION
-// ═══════════════════════════════════════════════════════
-
-data class AngelSessionData(
-    val jwtToken: String,
-    val refreshToken: String,
-    val feedToken: String?
-)
-
-// ═══════════════════════════════════════════════════════
 // PORTFOLIO HOLDING
 // ═══════════════════════════════════════════════════════
 
@@ -44,7 +34,7 @@ data class PortfolioHolding(
     val dayChange: Double = 0.0,
     val dayChangePct: Double = 0.0,
     val exchange: String = "NSE",
-    val source: String = "angel",
+    val source: String = "zerodha",
     val analysis: StockAnalysis? = null,
     val verdict: String = "HOLD"
 ) {
@@ -80,6 +70,7 @@ data class StockAnalysis(
     val macdLowPct: Double,
     val macd1yLow: Double,
     val macdPhase: String,
+    val macdCurve: List<Double> = emptyList(),
 
     val adx: Double,
     val plusDi: Double,
@@ -144,7 +135,7 @@ data class StockAlert(
     val buyScore: Int,
     val price: Double,
     val macdPhase: String,
-    val source: String = "angel",
+    val source: String = "zerodha",
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -178,6 +169,7 @@ data class DiscoveryScanResult(
     val totalSymbols: Int,         // how many we attempted
     val skipped: Int,
     val errors: Int,
+    val lastError: String = "",    // last error message for UI display
     val isComplete: Boolean,       // false while still scanning
 
     /** All analyzed stocks, sorted by buy score descending */

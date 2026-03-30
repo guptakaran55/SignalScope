@@ -7,9 +7,9 @@ import androidx.security.crypto.MasterKey
 /**
  * Encrypted credential storage for SignalScope.
  *
- * Stores credentials matching the original Python .env file:
- *   ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_TOTP_TOKEN
+ * Stores credentials for:
  *   ZERODHA_API_KEY, ZERODHA_API_SECRET
+ *   OPENAI_API_KEY (or Anthropic key) for AI stock analysis
  *
  * All sensitive values use EncryptedSharedPreferences (AES-256 GCM).
  * Non-sensitive config values use regular SharedPreferences.
@@ -31,42 +31,6 @@ class ConfigManager(context: Context) {
 
     // ── Plain store (non-sensitive config) ──
     private val prefs = context.getSharedPreferences("signalscope_prefs", Context.MODE_PRIVATE)
-
-    // ═══════════════════════════════════════════════════════
-    // ANGEL ONE CREDENTIALS  (matches .env: ANGEL_*)
-    // ═══════════════════════════════════════════════════════
-
-    var apiKey: String
-        get() = encrypted.getString("ANGEL_API_KEY", "") ?: ""
-        set(v) = encrypted.edit().putString("ANGEL_API_KEY", v).apply()
-
-    var clientId: String
-        get() = encrypted.getString("ANGEL_CLIENT_ID", "") ?: ""
-        set(v) = encrypted.edit().putString("ANGEL_CLIENT_ID", v).apply()
-
-    var password: String
-        get() = encrypted.getString("ANGEL_PASSWORD", "") ?: ""
-        set(v) = encrypted.edit().putString("ANGEL_PASSWORD", v).apply()
-
-    var totpToken: String
-        get() = encrypted.getString("ANGEL_TOTP_TOKEN", "") ?: ""
-        set(v) = encrypted.edit().putString("ANGEL_TOTP_TOKEN", v).apply()
-
-    // Session tokens (not credentials — refreshed on login)
-    var jwtToken: String
-        get() = encrypted.getString("angel_jwt", "") ?: ""
-        set(v) = encrypted.edit().putString("angel_jwt", v).apply()
-
-    var refreshToken: String
-        get() = encrypted.getString("angel_refresh", "") ?: ""
-        set(v) = encrypted.edit().putString("angel_refresh", v).apply()
-
-    val hasAngelCredentials: Boolean
-        get() = apiKey.isNotBlank() && clientId.isNotBlank() &&
-                password.isNotBlank() && totpToken.isNotBlank()
-
-    // Backwards-compat alias used in existing code
-    val hasCredentials: Boolean get() = hasAngelCredentials
 
     // ═══════════════════════════════════════════════════════
     // ZERODHA CREDENTIALS  (matches .env: ZERODHA_*)
@@ -95,35 +59,55 @@ class ConfigManager(context: Context) {
     val isZerodhaConnected: Boolean
         get() = hasZerodhaCredentials && zerodhaAccessToken.isNotBlank()
 
+    /** Kept for backward compatibility — now just checks Zerodha */
+    val hasCredentials: Boolean get() = isZerodhaConnected
+
     val zerodhaLoginUrl: String
         get() = if (zerodhaApiKey.isNotBlank())
             "https://kite.zerodha.com/connect/login?v=3&api_key=$zerodhaApiKey"
         else ""
 
     // ═══════════════════════════════════════════════════════
-    // SCAN CONFIGURATION
+    // LLM / AI CREDENTIALS (for stock analysis via news)
     // ═══════════════════════════════════════════════════════
 
-    /** Which portfolio sources to scan: "angel", "zerodha", "both" */
-    var portfolioSource: String
-        get() = prefs.getString("portfolio_source", "both") ?: "both"
-        set(v) = prefs.edit().putString("portfolio_source", v).apply()
+    /** OpenAI or Anthropic API key */
+    var openaiApiKey: String
+        get() = encrypted.getString("OPENAI_API_KEY", "") ?: ""
+        set(v) = encrypted.edit().putString("OPENAI_API_KEY", v).apply()
+
+    /** LLM provider: "openai" or "anthropic" */
+    var llmProvider: String
+        get() = prefs.getString("llm_provider", "openai") ?: "openai"
+        set(v) = prefs.edit().putString("llm_provider", v).apply()
+
+    /** LLM model name (e.g. "gpt-4o-mini", "claude-sonnet-4-20250514") */
+    var llmModel: String
+        get() = prefs.getString("llm_model", "gpt-4o-mini") ?: "gpt-4o-mini"
+        set(v) = prefs.edit().putString("llm_model", v).apply()
+
+    val hasLlmCredentials: Boolean
+        get() = openaiApiKey.isNotBlank()
+
+    // ═══════════════════════════════════════════════════════
+    // SCAN CONFIGURATION
+    // ═══════════════════════════════════════════════════════
 
     var portfolioScanIntervalMin: Int
         get() = prefs.getInt("scan_interval_min", 15)
         set(v) = prefs.edit().putInt("scan_interval_min", v).apply()
 
-    /** Sell score threshold for moderate sell notification (default 45 — matches Python) */
+    /** Sell score threshold for moderate sell notification (default 45) */
     var sellScoreAlertThreshold: Int
         get() = prefs.getInt("sell_threshold", 45)
         set(v) = prefs.edit().putInt("sell_threshold", v).apply()
 
-    /** Sell score threshold for strong sell notification (default 65 — matches Python) */
+    /** Sell score threshold for strong sell notification (default 65) */
     var strongSellAlertThreshold: Int
         get() = prefs.getInt("strong_sell_threshold", 65)
         set(v) = prefs.edit().putInt("strong_sell_threshold", v).apply()
 
-    /** Only scan during Indian market hours (9:15 AM – 3:30 PM IST, weekdays) */
+    /** Only scan during Indian market hours (9:15 AM - 3:30 PM IST, weekdays) */
     var scanDuringMarketHoursOnly: Boolean
         get() = prefs.getBoolean("market_hours_only", true)
         set(v) = prefs.edit().putBoolean("market_hours_only", v).apply()
@@ -151,14 +135,6 @@ class ConfigManager(context: Context) {
     // ═══════════════════════════════════════════════════════
     // CLEAR
     // ═══════════════════════════════════════════════════════
-
-    fun clearAngelCredentials() {
-        encrypted.edit()
-            .remove("ANGEL_API_KEY").remove("ANGEL_CLIENT_ID")
-            .remove("ANGEL_PASSWORD").remove("ANGEL_TOTP_TOKEN")
-            .remove("angel_jwt").remove("angel_refresh")
-            .apply()
-    }
 
     fun clearZerodhaSession() {
         encrypted.edit().remove("zerodha_access_token").apply()

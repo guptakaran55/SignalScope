@@ -6,31 +6,17 @@ import android.os.Bundle
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
-import com.signalscope.app.R
 import com.signalscope.app.data.ConfigManager
-import com.signalscope.app.network.AngelOneClient
 import com.signalscope.app.network.ZerodhaClient
 import kotlinx.coroutines.*
 
 /**
- * Settings screen — enter credentials for Angel One and Zerodha.
- *
- * Field names match the original .env file exactly:
- *   ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PASSWORD, ANGEL_TOTP_TOKEN
- *   ZERODHA_API_KEY, ZERODHA_API_SECRET
+ * Settings screen — enter Zerodha credentials, scan config, and AI settings.
  */
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var config: ConfigManager
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
-    // ── Angel One fields ──
-    private lateinit var etApiKey: EditText
-    private lateinit var etClientId: EditText
-    private lateinit var etPassword: EditText
-    private lateinit var etTotpToken: EditText
-    private lateinit var btnTestAngel: Button
-    private lateinit var tvAngelStatus: TextView
 
     // ── Zerodha fields ──
     private lateinit var etZerodhaApiKey: EditText
@@ -42,20 +28,23 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var layoutZerodhaToken: View
 
     // ── Config fields ──
-    private lateinit var spinnerSource: Spinner
     private lateinit var spinnerInterval: Spinner
     private lateinit var switchMarketHours: Switch
     private lateinit var switchVibrate: Switch
+
+    // ── LLM / AI fields ──
+    private lateinit var etLlmApiKey: EditText
+    private lateinit var spinnerLlmProvider: Spinner
+    private lateinit var spinnerLlmModel: Spinner
+    private lateinit var tvLlmStatus: TextView
 
     // ── Save ──
     private lateinit var btnSave: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Use your existing activity_settings layout or create a simple one programmatically
-        setContentView(buildSettingsLayout())
-
         config = ConfigManager(this)
+        setContentView(buildSettingsLayout())
         loadCurrentValues()
     }
 
@@ -97,6 +86,8 @@ class SettingsActivity : AppCompatActivity() {
         fun addField(hint: String, isPassword: Boolean = false): EditText {
             val et = EditText(this).apply {
                 this.hint = hint
+                setTextColor(android.graphics.Color.BLACK)
+                setHintTextColor(android.graphics.Color.parseColor("#94a3b8"))
                 if (isPassword) inputType =
                     android.text.InputType.TYPE_CLASS_TEXT or
                             android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -131,27 +122,6 @@ class SettingsActivity : AppCompatActivity() {
             return btn
         }
 
-        // ── Angel One section ──
-        addSection("Angel One Credentials")
-        addLabel("API Key (ANGEL_API_KEY)")
-        etApiKey = addField("Enter Angel One API Key")
-        addLabel("Client ID (ANGEL_CLIENT_ID)")
-        etClientId = addField("Enter Client ID")
-        addLabel("Password (ANGEL_PASSWORD)")
-        etPassword = addField("Enter password", isPassword = true)
-        addLabel("TOTP Secret (ANGEL_TOTP_TOKEN)")
-        etTotpToken = addField("Base32 secret from authenticator setup")
-
-        inner.addView(TextView(this).apply {
-            text = "⚠ TOTP Secret is the base32 key (e.g. JBSWY3DP...) — NOT the 6-digit code"
-            textSize = 11f
-            setPadding(0, 4, 0, 0)
-            setTextColor(android.graphics.Color.parseColor("#d97706"))
-        })
-
-        btnTestAngel = addButton("🔌 Test Angel One Connection")
-        tvAngelStatus = addStatus()
-
         // ── Zerodha section ──
         addSection("Zerodha Credentials")
         addLabel("API Key (ZERODHA_API_KEY)")
@@ -182,14 +152,6 @@ class SettingsActivity : AppCompatActivity() {
         // ── Scan config section ──
         addSection("Scan Configuration")
 
-        addLabel("Scan holdings from:")
-        spinnerSource = Spinner(this)
-        val sources = ArrayAdapter(this, android.R.layout.simple_spinner_item,
-            arrayOf("Both Angel One & Zerodha", "Angel One only", "Zerodha only"))
-        sources.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        spinnerSource.adapter = sources
-        inner.addView(spinnerSource)
-
         addLabel("Scan interval:")
         spinnerInterval = Spinner(this)
         val intervals = ArrayAdapter(this, android.R.layout.simple_spinner_item,
@@ -209,6 +171,42 @@ class SettingsActivity : AppCompatActivity() {
             setPadding(0, 8, 0, 0)
         }
         inner.addView(switchVibrate)
+
+        // ── AI / LLM section ──
+        addSection("AI Stock Analysis (Optional)")
+
+        inner.addView(TextView(this).apply {
+            text = "Enables AI-powered pullback analysis and stock outlook summaries.\nUses Google News for headlines + your LLM API for summarization."
+            textSize = 11f
+            setPadding(0, 0, 0, 8)
+            setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+        })
+
+        addLabel("API Key (OpenAI or Anthropic)")
+        etLlmApiKey = addField("sk-... or sk-ant-...", isPassword = true)
+
+        addLabel("Provider")
+        spinnerLlmProvider = Spinner(this)
+        val providers = ArrayAdapter(this, android.R.layout.simple_spinner_item,
+            arrayOf("OpenAI (ChatGPT)", "Anthropic (Claude)"))
+        providers.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinnerLlmProvider.adapter = providers
+        inner.addView(spinnerLlmProvider)
+
+        addLabel("Model")
+        spinnerLlmModel = Spinner(this)
+        val models = ArrayAdapter(this, android.R.layout.simple_spinner_item,
+            arrayOf("gpt-4o-mini (cheapest)", "gpt-4o", "claude-sonnet-4-20250514", "claude-haiku-4-20250414"))
+        models.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinnerLlmModel.adapter = models
+        inner.addView(spinnerLlmModel)
+
+        tvLlmStatus = addStatus()
+        if (config.hasLlmCredentials) {
+            tvLlmStatus.text = "✅ AI analysis enabled (${config.llmProvider} / ${config.llmModel})"
+            tvLlmStatus.setTextColor(android.graphics.Color.parseColor("#059669"))
+            tvLlmStatus.visibility = View.VISIBLE
+        }
 
         // ── Save button ──
         btnSave = Button(this).apply {
@@ -233,8 +231,6 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun setupListeners() {
         btnSave.setOnClickListener { saveSettings() }
-
-        btnTestAngel.setOnClickListener { testAngelConnection() }
 
         btnZerodhaLogin.setOnClickListener {
             // Save API key first so login URL is correct
@@ -263,19 +259,8 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun loadCurrentValues() {
-        etApiKey.setText(config.apiKey)
-        etClientId.setText(config.clientId)
-        etPassword.setText(config.password)
-        etTotpToken.setText(config.totpToken)
         etZerodhaApiKey.setText(config.zerodhaApiKey)
         etZerodhaApiSecret.setText(config.zerodhaApiSecret)
-
-        // Source spinner
-        spinnerSource.setSelection(when (config.portfolioSource) {
-            "angel"   -> 1
-            "zerodha" -> 2
-            else      -> 0
-        })
 
         // Interval spinner
         spinnerInterval.setSelection(when (config.portfolioScanIntervalMin) {
@@ -290,6 +275,16 @@ class SettingsActivity : AppCompatActivity() {
         switchMarketHours.isChecked = config.scanDuringMarketHoursOnly
         switchVibrate.isChecked = config.vibrateOnAlerts
 
+        // LLM settings
+        etLlmApiKey.setText(config.openaiApiKey)
+        spinnerLlmProvider.setSelection(if (config.llmProvider == "anthropic") 1 else 0)
+        val modelIdx = when (config.llmModel) {
+            "gpt-4o-mini" -> 0; "gpt-4o" -> 1
+            "claude-sonnet-4-20250514" -> 2; "claude-haiku-4-20250414" -> 3
+            else -> 0
+        }
+        spinnerLlmModel.setSelection(modelIdx)
+
         // Show Zerodha connection status
         if (config.isZerodhaConnected) {
             tvZerodhaStatus.text = "✅ Connected as ${config.zerodhaUserName}"
@@ -299,22 +294,11 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun saveSettings() {
-        // Angel One
-        config.apiKey = etApiKey.text.toString().trim()
-        config.clientId = etClientId.text.toString().trim()
-        config.password = etPassword.text.toString().trim()
-        config.totpToken = etTotpToken.text.toString().trim()
-
         // Zerodha
         config.zerodhaApiKey = etZerodhaApiKey.text.toString().trim()
         config.zerodhaApiSecret = etZerodhaApiSecret.text.toString().trim()
 
         // Scan config
-        config.portfolioSource = when (spinnerSource.selectedItemPosition) {
-            1    -> "angel"
-            2    -> "zerodha"
-            else -> "both"
-        }
         config.portfolioScanIntervalMin = when (spinnerInterval.selectedItemPosition) {
             0    -> 5
             1    -> 10
@@ -326,47 +310,17 @@ class SettingsActivity : AppCompatActivity() {
         config.scanDuringMarketHoursOnly = switchMarketHours.isChecked
         config.vibrateOnAlerts = switchVibrate.isChecked
 
+        // LLM settings
+        config.openaiApiKey = etLlmApiKey.text.toString().trim()
+        config.llmProvider = if (spinnerLlmProvider.selectedItemPosition == 1) "anthropic" else "openai"
+        config.llmModel = when (spinnerLlmModel.selectedItemPosition) {
+            0 -> "gpt-4o-mini"; 1 -> "gpt-4o"
+            2 -> "claude-sonnet-4-20250514"; 3 -> "claude-haiku-4-20250414"
+            else -> "gpt-4o-mini"
+        }
+
         Toast.makeText(this, "✅ Settings saved", Toast.LENGTH_SHORT).show()
         finish()
-    }
-
-    private fun testAngelConnection() {
-        // Save fields first
-        config.apiKey = etApiKey.text.toString().trim()
-        config.clientId = etClientId.text.toString().trim()
-        config.password = etPassword.text.toString().trim()
-        config.totpToken = etTotpToken.text.toString().trim()
-
-        if (!config.hasAngelCredentials) {
-            tvAngelStatus.text = "❌ Fill in all Angel One fields first"
-            tvAngelStatus.setTextColor(android.graphics.Color.parseColor("#dc2626"))
-            tvAngelStatus.visibility = View.VISIBLE
-            return
-        }
-
-        btnTestAngel.isEnabled = false
-        tvAngelStatus.text = "Testing connection..."
-        tvAngelStatus.setTextColor(android.graphics.Color.parseColor("#475569"))
-        tvAngelStatus.visibility = View.VISIBLE
-
-        scope.launch {
-            val client = AngelOneClient(config)
-            val result = withContext(Dispatchers.IO) { client.login() }
-
-            withContext(Dispatchers.Main) {
-                btnTestAngel.isEnabled = true
-                when (result) {
-                    is AngelOneClient.AuthResult.Success -> {
-                        tvAngelStatus.text = "✅ Connected to Angel One"
-                        tvAngelStatus.setTextColor(android.graphics.Color.parseColor("#059669"))
-                    }
-                    is AngelOneClient.AuthResult.Failure -> {
-                        tvAngelStatus.text = "❌ ${result.message}"
-                        tvAngelStatus.setTextColor(android.graphics.Color.parseColor("#dc2626"))
-                    }
-                }
-            }
-        }
     }
 
     private fun submitZerodhaToken() {
