@@ -29,7 +29,10 @@ public final class ItemHoldingBinding implements ViewBinding {
   public final TextView holdPhase;
 
   @NonNull
-  public final TextView holdSellScore;
+  public final TextView holdProfitScore;
+
+  @NonNull
+  public final TextView holdProtectScore;
 
   @NonNull
   public final TextView holdSymbol;
@@ -38,13 +41,15 @@ public final class ItemHoldingBinding implements ViewBinding {
   public final TextView holdVerdict;
 
   private ItemHoldingBinding(@NonNull CardView rootView, @NonNull TextView holdBuyScore,
-      @NonNull TextView holdInfo, @NonNull TextView holdPhase, @NonNull TextView holdSellScore,
-      @NonNull TextView holdSymbol, @NonNull TextView holdVerdict) {
+      @NonNull TextView holdInfo, @NonNull TextView holdPhase, @NonNull TextView holdProfitScore,
+      @NonNull TextView holdProtectScore, @NonNull TextView holdSymbol,
+      @NonNull TextView holdVerdict) {
     this.rootView = rootView;
     this.holdBuyScore = holdBuyScore;
     this.holdInfo = holdInfo;
     this.holdPhase = holdPhase;
-    this.holdSellScore = holdSellScore;
+    this.holdProfitScore = holdProfitScore;
+    this.holdProtectScore = holdProtectScore;
     this.holdSymbol = holdSymbol;
     this.holdVerdict = holdVerdict;
   }
@@ -94,9 +99,15 @@ public final class ItemHoldingBinding implements ViewBinding {
         break missingId;
       }
 
-      id = R.id.holdSellScore;
-      TextView holdSellScore = ViewBindings.findChildViewById(rootView, id);
-      if (holdSellScore == null) {
+      id = R.id.holdProfitScore;
+      TextView holdProfitScore = ViewBindings.findChildViewById(rootView, id);
+      if (holdProfitScore == null) {
+        break missingId;
+      }
+
+      id = R.id.holdProtectScore;
+      TextView holdProtectScore = ViewBindings.findChildViewById(rootView, id);
+      if (holdProtectScore == null) {
         break missingId;
       }
 
@@ -113,7 +124,7 @@ public final class ItemHoldingBinding implements ViewBinding {
       }
 
       return new ItemHoldingBinding((CardView) rootView, holdBuyScore, holdInfo, holdPhase,
-          holdSellScore, holdSymbol, holdVerdict);
+          holdProfitScore, holdProtectScore, holdSymbol, holdVerdict);
     }
     String missingId = rootView.getResources().getResourceName(id);
     throw new NullPointerException("Missing required view with ID: ".concat(missingId));

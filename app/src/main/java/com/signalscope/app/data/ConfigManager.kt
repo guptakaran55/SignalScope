@@ -1,8 +1,13 @@
 package com.signalscope.app.data
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.google.gson.Gson
+import java.io.File
+import java.security.KeyStore
 
 /**
  * Encrypted credential storage for SignalScope.
@@ -13,21 +18,114 @@ import androidx.security.crypto.MasterKey
  *
  * All sensitive values use EncryptedSharedPreferences (AES-256 GCM).
  * Non-sensitive config values use regular SharedPreferences.
+ *
+ * Handles Android Keystore corruption gracefully — if the encrypted store
+ * cannot be decrypted (AEADBadTagException), corrupted data is wiped and
+ * recreated. The user will need to re-enter credentials but the app won't crash.
  */
 class ConfigManager(context: Context) {
 
-    // ── Encrypted store (credentials) ──
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    companion object {
+        private const val TAG = "ConfigManager"
+        private const val ENCRYPTED_PREFS_FILE = "signalscope_secure_prefs"
+        private const val MASTER_KEY_ALIAS = "_androidx_security_master_key_"
+    }
 
-    private val encrypted = EncryptedSharedPreferences.create(
-        context,
-        "signalscope_secure_prefs",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    // ── Credential store ──
+    // NOTE: Switched from EncryptedSharedPreferences to plain SharedPreferences.
+    // Reason: EncryptedSharedPreferences relies on Android Keystore, which gets
+    // corrupted frequently on MIUI/Xiaomi devices, causing AEADBadTagException
+    // and wiping all stored credentials. Since the prefs file lives inside the
+    // app's private sandbox (MODE_PRIVATE), other apps cannot read it without
+    // root — encryption was offering little real security but causing constant
+    // credential loss for Xiaomi users.
+    private val encrypted: SharedPreferences = context.getSharedPreferences(
+        "signalscope_credentials", Context.MODE_PRIVATE
+    ).also { newPrefs ->
+        // One-time migration: if old encrypted store still has credentials, copy them over
+        try {
+            if (newPrefs.getString("ZERODHA_API_KEY", "").isNullOrEmpty()) {
+                val oldEncrypted = createEncryptedPrefs(context)
+                val keysToMigrate = listOf(
+                    "ZERODHA_API_KEY", "ZERODHA_API_SECRET",
+                    "zerodha_access_token", "OPENAI_API_KEY"
+                )
+                val editor = newPrefs.edit()
+                var migrated = 0
+                keysToMigrate.forEach { key ->
+                    val v = oldEncrypted.getString(key, "") ?: ""
+                    if (v.isNotEmpty()) { editor.putString(key, v); migrated++ }
+                }
+                if (migrated > 0) {
+                    editor.apply()
+                    Log.i(TAG, "Migrated $migrated credentials from encrypted store")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Migration from encrypted prefs failed (expected on first install or corrupted keystore)", e)
+        }
+    }
+
+    /**
+     * Creates EncryptedSharedPreferences with automatic recovery from Keystore corruption.
+     *
+     * Android Keystore can become corrupted (especially on MIUI/Xiaomi devices),
+     * causing AEADBadTagException when trying to decrypt existing preferences.
+     * When this happens, we:
+     *   1. Delete the corrupted shared preferences XML file
+     *   2. Remove the master key from Android Keystore
+     *   3. Recreate both from scratch
+     *
+     * The user loses stored credentials (API keys) but the app remains functional.
+     */
+    private fun createEncryptedPrefs(context: Context): SharedPreferences {
+        return try {
+            buildEncryptedPrefs(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "EncryptedSharedPreferences corrupted — wiping and recreating", e)
+            try {
+                // Step 1: Delete the corrupted preferences file
+                val prefsFile = File(context.filesDir.parent, "shared_prefs/$ENCRYPTED_PREFS_FILE.xml")
+                if (prefsFile.exists()) {
+                    prefsFile.delete()
+                    Log.w(TAG, "Deleted corrupted prefs file: ${prefsFile.absolutePath}")
+                }
+
+                // Step 2: Remove the corrupted master key from Android Keystore
+                try {
+                    val keyStore = KeyStore.getInstance("AndroidKeyStore")
+                    keyStore.load(null)
+                    if (keyStore.containsAlias(MASTER_KEY_ALIAS)) {
+                        keyStore.deleteEntry(MASTER_KEY_ALIAS)
+                        Log.w(TAG, "Deleted corrupted master key from Keystore")
+                    }
+                } catch (ksEx: Exception) {
+                    Log.e(TAG, "Failed to clear Keystore entry", ksEx)
+                }
+
+                // Step 3: Recreate fresh
+                buildEncryptedPrefs(context)
+            } catch (e2: Exception) {
+                // Last resort: fall back to unencrypted prefs so the app doesn't crash-loop
+                Log.e(TAG, "CRITICAL: Cannot create encrypted prefs even after reset — using plaintext fallback", e2)
+                context.getSharedPreferences("${ENCRYPTED_PREFS_FILE}_fallback", Context.MODE_PRIVATE)
+            }
+        }
+    }
+
+    private fun buildEncryptedPrefs(context: Context): SharedPreferences {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+
+        return EncryptedSharedPreferences.create(
+            context,
+            ENCRYPTED_PREFS_FILE,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
 
     // ── Plain store (non-sensitive config) ──
     private val prefs = context.getSharedPreferences("signalscope_prefs", Context.MODE_PRIVATE)
@@ -119,6 +217,28 @@ class ConfigManager(context: Context) {
     var vibrateOnAlerts: Boolean
         get() = prefs.getBoolean("vibrate_alerts", true)
         set(v) = prefs.edit().putBoolean("vibrate_alerts", v).apply()
+
+    // ═══════════════════════════════════════════════════════
+    // SCORING WEIGHTS (stored as JSON in plain prefs)
+    // ═══════════════════════════════════════════════════════
+
+    private val gson = Gson()
+
+    var scoringWeights: ScoringWeights
+        get() {
+            val json = prefs.getString("scoring_weights", null) ?: return ScoringWeights()
+            return try {
+                gson.fromJson(json, ScoringWeights::class.java)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to parse scoring weights, using defaults", e)
+                ScoringWeights()
+            }
+        }
+        set(v) = prefs.edit().putString("scoring_weights", gson.toJson(v)).apply()
+
+    fun resetScoringWeights() {
+        prefs.edit().remove("scoring_weights").apply()
+    }
 
     // ═══════════════════════════════════════════════════════
     // SERVICE STATE

@@ -28,10 +28,24 @@ class ZerodhaClient(private val config: ConfigManager) {
     }
 
     private val gson = Gson()
+
+    // Custom DNS — prefer IPv4 (MIUI has flaky IPv6)
+    private val ipv4PreferredDns = object : Dns {
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            val all = Dns.SYSTEM.lookup(hostname)
+            val v4 = all.filter { it is java.net.Inet4Address }
+            val v6 = all.filter { it !is java.net.Inet4Address }
+            return v4 + v6
+        }
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .dns(ipv4PreferredDns)
+        .protocols(listOf(Protocol.HTTP_1_1))
         .build()
 
     // ═══════════════════════════════════════════════════════
@@ -68,24 +82,25 @@ class ZerodhaClient(private val config: ConfigManager) {
                 .post(formBody)
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return ZerodhaAuthResult.Failure("Empty response")
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: return ZerodhaAuthResult.Failure("Empty response")
 
-            val json = JsonParser.parseString(body).asJsonObject
-            if (json.get("status")?.asString != "success") {
-                val msg = json.get("message")?.asString ?: "Unknown error"
-                return ZerodhaAuthResult.Failure(msg)
+                val json = JsonParser.parseString(body).asJsonObject
+                if (json.get("status")?.asString != "success") {
+                    val msg = json.get("message")?.asString ?: "Unknown error"
+                    return ZerodhaAuthResult.Failure(msg)
+                }
+
+                val data = json.getAsJsonObject("data")
+                val accessToken = data.get("access_token")?.asString ?: ""
+                val userName = data.get("user_name")?.asString ?: ""
+
+                config.zerodhaAccessToken = accessToken
+                config.zerodhaUserName = userName
+
+                Log.i(TAG, "Zerodha login successful: $userName")
+                ZerodhaAuthResult.Success(accessToken, userName)
             }
-
-            val data = json.getAsJsonObject("data")
-            val accessToken = data.get("access_token")?.asString ?: ""
-            val userName = data.get("user_name")?.asString ?: ""
-
-            config.zerodhaAccessToken = accessToken
-            config.zerodhaUserName = userName
-
-            Log.i(TAG, "Zerodha login successful: $userName")
-            ZerodhaAuthResult.Success(accessToken, userName)
 
         } catch (e: Exception) {
             Log.e(TAG, "Zerodha token exchange error", e)
@@ -111,18 +126,19 @@ class ZerodhaClient(private val config: ConfigManager) {
                 .addHeader("Authorization", "token ${config.zerodhaApiKey}:${config.zerodhaAccessToken}")
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return ZerodhaAuthResult.Failure("Empty response")
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: return ZerodhaAuthResult.Failure("Empty response")
 
-            val json = JsonParser.parseString(body).asJsonObject
-            if (json.get("status")?.asString != "success") {
-                config.zerodhaAccessToken = "" // clear invalid token
-                return ZerodhaAuthResult.Failure("Token invalid or expired")
+                val json = JsonParser.parseString(body).asJsonObject
+                if (json.get("status")?.asString != "success") {
+                    config.zerodhaAccessToken = "" // clear invalid token
+                    return ZerodhaAuthResult.Failure("Token invalid or expired")
+                }
+
+                val userName = json.getAsJsonObject("data")?.get("user_name")?.asString ?: ""
+                config.zerodhaUserName = userName
+                ZerodhaAuthResult.Success(config.zerodhaAccessToken, userName)
             }
-
-            val userName = json.getAsJsonObject("data")?.get("user_name")?.asString ?: ""
-            config.zerodhaUserName = userName
-            ZerodhaAuthResult.Success(config.zerodhaAccessToken, userName)
 
         } catch (e: Exception) {
             ZerodhaAuthResult.Failure(e.message ?: "Unknown error")
@@ -166,50 +182,51 @@ class ZerodhaClient(private val config: ConfigManager) {
                 .addHeader("Authorization", "token ${config.zerodhaApiKey}:${config.zerodhaAccessToken}")
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return HoldingsResult.Failure("Empty response")
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: return HoldingsResult.Failure("Empty response")
 
-            val json = JsonParser.parseString(body).asJsonObject
-            if (json.get("status")?.asString != "success") {
-                val msg = json.get("message")?.asString ?: "Unknown error"
-                if (msg.lowercase().contains("token") || response.code == 403) {
-                    config.zerodhaAccessToken = "" // clear expired token
-                    return HoldingsResult.Expired("Zerodha session expired. Please reconnect.")
+                val json = JsonParser.parseString(body).asJsonObject
+                if (json.get("status")?.asString != "success") {
+                    val msg = json.get("message")?.asString ?: "Unknown error"
+                    if (msg.lowercase().contains("token") || response.code == 403) {
+                        config.zerodhaAccessToken = "" // clear expired token
+                        return HoldingsResult.Expired("Zerodha session expired. Please reconnect.")
+                    }
+                    return HoldingsResult.Failure(msg)
                 }
-                return HoldingsResult.Failure(msg)
+
+                val rawData = json.getAsJsonArray("data") ?: return HoldingsResult.Success(emptyList())
+
+                val holdings = rawData.mapNotNull { item ->
+                    val obj = item.asJsonObject
+                    val qty = obj.get("quantity")?.asInt ?: 0
+                    if (qty <= 0) return@mapNotNull null
+
+                    val tradingSymbol = obj.get("tradingsymbol")?.asString ?: return@mapNotNull null
+                    val avgPrice = obj.get("average_price")?.asDouble ?: 0.0
+                    val ltp = obj.get("last_price")?.asDouble ?: 0.0
+                    val dayChange = obj.get("day_change")?.asDouble ?: 0.0
+                    val dayChangePct = obj.get("day_change_percentage")?.asDouble ?: 0.0
+                    val pnl = obj.get("pnl")?.asDouble ?: 0.0
+                    val exchange = obj.get("exchange")?.asString ?: "NSE"
+
+                    PortfolioHolding(
+                        symbol = tradingSymbol,
+                        token = "", // Zerodha doesn't use tokens the same way; Yahoo Finance uses symbol
+                        quantity = qty,
+                        avgPrice = avgPrice,
+                        ltp = ltp,
+                        pnl = pnl,
+                        dayChange = dayChange,
+                        dayChangePct = dayChangePct,
+                        exchange = exchange,
+                        source = "zerodha"
+                    )
+                }
+
+                Log.i(TAG, "Zerodha holdings fetched: ${holdings.size} stocks")
+                HoldingsResult.Success(holdings)
             }
-
-            val rawData = json.getAsJsonArray("data") ?: return HoldingsResult.Success(emptyList())
-
-            val holdings = rawData.mapNotNull { item ->
-                val obj = item.asJsonObject
-                val qty = obj.get("quantity")?.asInt ?: 0
-                if (qty <= 0) return@mapNotNull null
-
-                val tradingSymbol = obj.get("tradingsymbol")?.asString ?: return@mapNotNull null
-                val avgPrice = obj.get("average_price")?.asDouble ?: 0.0
-                val ltp = obj.get("last_price")?.asDouble ?: 0.0
-                val dayChange = obj.get("day_change")?.asDouble ?: 0.0
-                val dayChangePct = obj.get("day_change_percentage")?.asDouble ?: 0.0
-                val pnl = obj.get("pnl")?.asDouble ?: 0.0
-                val exchange = obj.get("exchange")?.asString ?: "NSE"
-
-                PortfolioHolding(
-                    symbol = tradingSymbol,
-                    token = "", // Zerodha doesn't use tokens the same way; Yahoo Finance uses symbol
-                    quantity = qty,
-                    avgPrice = avgPrice,
-                    ltp = ltp,
-                    pnl = pnl,
-                    dayChange = dayChange,
-                    dayChangePct = dayChangePct,
-                    exchange = exchange,
-                    source = "zerodha"
-                )
-            }
-
-            Log.i(TAG, "Zerodha holdings fetched: ${holdings.size} stocks")
-            HoldingsResult.Success(holdings)
 
         } catch (e: Exception) {
             Log.e(TAG, "Zerodha holdings fetch error", e)

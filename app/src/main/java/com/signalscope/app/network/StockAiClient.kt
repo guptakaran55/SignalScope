@@ -28,10 +28,26 @@ object StockAiClient {
 
     private const val TAG = "StockAiClient"
 
+    // MIUI/Xiaomi hardening — same recipe as Yahoo/Zerodha clients:
+    // prefer IPv4 (flaky IPv6), HTTP/1.1 only (HTTP/2 is unstable on MIUI),
+    // retry on connection failure, and a hard callTimeout so DNS hangs can't stall forever.
+    private val ipv4PreferredDns = object : Dns {
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            val all = Dns.SYSTEM.lookup(hostname)
+            val v4 = all.filter { it is java.net.Inet4Address }
+            val v6 = all.filter { it !is java.net.Inet4Address }
+            return v4 + v6
+        }
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)          // was missing — prompts can be large
+        .callTimeout(40, TimeUnit.SECONDS)           // hard cap: spinner can't outlive this
+        .retryOnConnectionFailure(true)
+        .dns(ipv4PreferredDns)
+        .protocols(listOf(Protocol.HTTP_1_1))
         .build()
 
     // ═══════════════════════════════════════════════════════
@@ -206,7 +222,8 @@ object StockAiClient {
         price: Double,
         ema21PctDiff: Double,
         macdPhase: String,
-        sellScore: Int
+        profitScore: Int,
+        protectScore: Int
     ): AiResult {
         val headlines = fetchNewsHeadlines(symbol)
         if (headlines.isEmpty()) {
@@ -221,7 +238,7 @@ End with a one-word classification: TEMPORARY, STRUCTURAL, or UNCERTAIN."""
             append("Stock: $symbol (NSE India)\n")
             append("Current price: ₹${String.format("%.2f", price)}\n")
             append("Distance from EMA(21): ${String.format("%.1f", ema21PctDiff)}% (deep pullback)\n")
-            append("MACD phase: $macdPhase | Sell score: $sellScore/108\n\n")
+            append("MACD phase: $macdPhase | Profit Booking: $profitScore/58 | Capital Protection: $protectScore/58\n\n")
             append("Recent news headlines:\n")
             headlines.forEachIndexed { i, h -> append("${i + 1}. $h\n") }
             append("\nWhat is the most probable reason for this pullback? Is it temporary (buy the dip) or structural (avoid)?")
@@ -240,7 +257,9 @@ End with a one-word classification: TEMPORARY, STRUCTURAL, or UNCERTAIN."""
         symbol: String,
         price: Double,
         buyScore: Int,
-        sellScore: Int,
+        profitScore: Int,
+        protectScore: Int,
+        sellIntent: String,
         macdPhase: String,
         macdSlope: Double,
         rsi: Double?,
@@ -264,7 +283,9 @@ Keep each section to 2-3 sentences max. Be specific about price levels when poss
             append("Stock: $symbol (NSE India)\n")
             append("Price: ₹${String.format("%.2f", price)}\n\n")
             append("── Technical Indicators ──\n")
-            append("Buy score: $buyScore/120 | Sell score: $sellScore/108\n")
+            append("Buy score: $buyScore/120\n")
+            append("Profit Booking score: $profitScore/58 | Capital Protection score: $protectScore/58\n")
+            append("Sell Intent: $sellIntent\n")
             append("MACD: $macdPhase (slope: ${String.format("%.3f", macdSlope)})\n")
             if (rsi != null) append("RSI(14): ${String.format("%.1f", rsi)}\n")
             if (sma200 != null) append("SMA(200): ₹${String.format("%.2f", sma200)} — price is ${if (price > sma200) "above" else "below"}\n")

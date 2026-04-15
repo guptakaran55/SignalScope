@@ -65,7 +65,7 @@
                 android:fontFamily="monospace" />
         </LinearLayout>
 
-        <!-- Buy/Sell scores -->
+        <!-- Buy / Profit Booking / Capital Protection scores -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -77,29 +77,45 @@
                 android:id="@+id/holdBuyScore"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
                 android:paddingTop="2dp"
                 android:paddingBottom="2dp"
                 android:text="72"
                 android:textColor="#059669"
-                android:textSize="12sp"
+                android:textSize="10sp"
                 android:textStyle="bold"
                 android:fontFamily="monospace"
                 android:background="@drawable/score_buy_bg" />
 
             <TextView
-                android:id="@+id/holdSellScore"
+                android:id="@+id/holdProfitScore"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp"
+                android:layout_marginStart="4dp"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
                 android:paddingTop="2dp"
                 android:paddingBottom="2dp"
-                android:text="28"
-                android:textColor="#dc2626"
-                android:textSize="12sp"
+                android:text="P28"
+                android:textColor="#f97316"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:background="@drawable/score_sell_bg" />
+
+            <TextView
+                android:id="@+id/holdProtectScore"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:text="C12"
+                android:textColor="#eab308"
+                android:textSize="10sp"
                 android:textStyle="bold"
                 android:fontFamily="monospace"
                 android:background="@drawable/score_sell_bg" />

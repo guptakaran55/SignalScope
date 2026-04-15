@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.google.gson.Gson
 import com.signalscope.app.data.ConfigManager
+import com.signalscope.app.data.DiscoveryResultStore
 import com.signalscope.app.data.DiscoveryScanResult
 import com.signalscope.app.service.ScanService
 import com.signalscope.app.network.YahooFinanceClient
@@ -58,35 +59,67 @@ class MainActivity : AppCompatActivity() {
     private val gson = Gson()
     private var isServiceRunning = false
 
+    // ── Polling-based UI refresh (replaces unreliable broadcasts on MIUI) ──
+    private val pollHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var lastSeenDiscoveryVersion = 0L
+    private var lastSeenPortfolioVersion = 0L
+    private var wasDiscoveryRunning = false
+    private val POLL_INTERVAL_MS = 2000L // 2 seconds
+
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            pollForUpdates()
+            pollHandler.postDelayed(this, POLL_INTERVAL_MS)
+        }
+    }
+
+    private fun pollForUpdates() {
+        val holder = ScanServiceResultHolder
+
+        // Check for discovery updates
+        if (holder.discoveryVersion != lastSeenDiscoveryVersion) {
+            lastSeenDiscoveryVersion = holder.discoveryVersion
+
+            refreshStatusBar()
+
+            if (holder.isDiscoveryRunning) {
+                wasDiscoveryRunning = true
+                val p = holder.discoveryProgress
+                val t = holder.discoveryTotal
+                val m = holder.discoveryMarket
+                webView.evaluateJavascript(
+                    "window.updateProgress($p, $t, '${m.replace("'", "\\'")}')", null
+                )
+                pushDiscoveryResultsToWebView()
+            } else if (wasDiscoveryRunning) {
+                // Scan just finished
+                wasDiscoveryRunning = false
+                pushDiscoveryResultsToWebView()
+                webView.evaluateJavascript("window.scanComplete()", null)
+                btnStop.visibility = View.GONE
+            }
+        }
+
+        // Check for portfolio updates
+        if (holder.portfolioVersion != lastSeenPortfolioVersion) {
+            lastSeenPortfolioVersion = holder.portfolioVersion
+            refreshStatusBar()
+            pushPortfolioResultsToWebView()
+        }
+    }
+
+    // Keep broadcast receiver as fallback for immediate delivery when it works
     private val scanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 ScanService.BROADCAST_SCAN_UPDATE -> {
-                    // Portfolio scan completed — push holdings to WebView + refresh
                     refreshStatusBar()
                     pushPortfolioResultsToWebView()
+                    lastSeenPortfolioVersion = ScanServiceResultHolder.portfolioVersion
                 }
                 ScanService.BROADCAST_DISCOVERY_UPDATE -> {
-                    val progress = intent.getIntExtra(ScanService.EXTRA_DISCOVERY_PROGRESS, -1)
-                    val total = intent.getIntExtra(ScanService.EXTRA_DISCOVERY_TOTAL, -1)
-                    val market = intent.getStringExtra(ScanService.EXTRA_DISCOVERY_MARKET) ?: ""
-
-                    if (progress < 0) {
-                        // Scan complete — push final results to WebView
-                        pushDiscoveryResultsToWebView()
-                        webView.evaluateJavascript("window.scanComplete()", null)
-                        btnStop.visibility = View.GONE
-                        refreshStatusBar()
-                    } else {
-                        // In-progress — update progress bar every stock, but only push
-                        // full table data every 25 stocks to avoid churning 700KB×500 times
-                        webView.evaluateJavascript(
-                            "window.updateProgress($progress, $total, '${market.replace("'", "\\'")}')", null
-                        )
-                        if (progress % 25 == 0 || progress <= 3) {
-                            pushDiscoveryResultsToWebView()
-                        }
-                    }
+                    // Force an immediate poll cycle so updates are instant when broadcasts work
+                    pollForUpdates()
                 }
             }
         }
@@ -102,6 +135,15 @@ class MainActivity : AppCompatActivity() {
         setupButtons()
         requestNotificationPermission()
         refreshStatusBar()
+
+        // Load cached discovery results from disk so they survive process death
+        if (ScanServiceResultHolder.lastDiscoveryResult == null) {
+            val cached = DiscoveryResultStore.loadLatest(this)
+            if (cached != null) {
+                ScanServiceResultHolder.lastDiscoveryResult = cached
+                Log.d(TAG, "Restored ${cached.allStocks.size} cached discovery stocks (${cached.market})")
+            }
+        }
     }
 
     override fun onResume() {
@@ -112,15 +154,34 @@ class MainActivity : AppCompatActivity() {
         }
         ContextCompat.registerReceiver(this, scanReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         isServiceRunning = config.serviceRunning
+
+        // Restore from disk if in-memory results were lost (process death)
+        if (ScanServiceResultHolder.lastDiscoveryResult == null) {
+            val cached = DiscoveryResultStore.loadLatest(this)
+            if (cached != null) {
+                ScanServiceResultHolder.lastDiscoveryResult = cached
+                Log.d(TAG, "Restored ${cached.allStocks.size} cached discovery stocks (${cached.market})")
+            }
+        }
+
+        // Track if discovery is currently running
+        wasDiscoveryRunning = ScanServiceResultHolder.isDiscoveryRunning
+        btnStop.visibility = if (wasDiscoveryRunning) View.VISIBLE else View.GONE
+
         refreshStatusBar()
 
-        // If there are existing results, push them to WebView
+        // Push whatever results we have (live or cached) to WebView
         pushDiscoveryResultsToWebView()
         pushPortfolioResultsToWebView()
+
+        // Start polling for live updates (reliable even on MIUI)
+        pollHandler.removeCallbacks(pollRunnable)
+        pollHandler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
     }
 
     override fun onPause() {
         super.onPause()
+        pollHandler.removeCallbacks(pollRunnable)
         try { unregisterReceiver(scanReceiver) } catch (_: Exception) {}
     }
 
@@ -365,43 +426,71 @@ class MainActivity : AppCompatActivity() {
         /** Called from detail modal — analyzes why a stock has pulled back */
         @JavascriptInterface
         fun analyzePullback(symbol: String, price: Double, ema21PctDiff: Double,
-                            macdPhase: String, sellScore: Int) {
+                            macdPhase: String, profitScore: Int, protectScore: Int) {
             thread(isDaemon = true) {
-                val result = StockAiClient.analyzePullback(
-                    config, symbol, price, ema21PctDiff, macdPhase, sellScore
-                )
-                val text = when (result) {
-                    is StockAiClient.AiResult.Success -> result.text
-                    is StockAiClient.AiResult.Error -> "⚠ ${result.message}"
+                // Guard the ENTIRE body — any unexpected exception must still
+                // deliver a callback, otherwise the spinner spins forever.
+                val text: String = try {
+                    val result = StockAiClient.analyzePullback(
+                        config, symbol, price, ema21PctDiff, macdPhase, profitScore, protectScore
+                    )
+                    when (result) {
+                        is StockAiClient.AiResult.Success -> result.text
+                        is StockAiClient.AiResult.Error -> "⚠ ${result.message}"
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Pullback thread crashed for $symbol", e)
+                    "⚠ AI analysis crashed: ${e.message ?: e.javaClass.simpleName}"
                 }
-                val escaped = text.replace("\\", "\\\\").replace("'", "\\'")
-                    .replace("\n", "\\n").replace("\r", "")
-                runOnUiThread {
-                    webView.evaluateJavascript("window.onPullbackResult('$escaped')", null)
-                }
+                deliverAiCallback("window.onPullbackResult", text)
             }
         }
 
         /** Called from detail modal — full stock outlook analysis */
         @JavascriptInterface
-        fun analyzeOutlook(symbol: String, price: Double, buyScore: Int, sellScore: Int,
+        fun analyzeOutlook(symbol: String, price: Double, buyScore: Int,
+                           profitScore: Int, protectScore: Int, sellIntent: String,
                            macdPhase: String, macdSlope: Double, rsi: Double,
                            sma200: Double, ema21PctDiff: Double, rrRatio: Double, priceVel: Double) {
             thread(isDaemon = true) {
-                val result = StockAiClient.analyzeOutlook(
-                    config, symbol, price, buyScore, sellScore, macdPhase,
-                    macdSlope, if (rsi == 0.0) null else rsi,
-                    if (sma200 == 0.0) null else sma200,
-                    ema21PctDiff, rrRatio, priceVel
-                )
-                val text = when (result) {
-                    is StockAiClient.AiResult.Success -> result.text
-                    is StockAiClient.AiResult.Error -> "⚠ ${result.message}"
+                val text: String = try {
+                    val result = StockAiClient.analyzeOutlook(
+                        config, symbol, price, buyScore, profitScore, protectScore, sellIntent,
+                        macdPhase, macdSlope, if (rsi == 0.0) null else rsi,
+                        if (sma200 == 0.0) null else sma200,
+                        ema21PctDiff, rrRatio, priceVel
+                    )
+                    when (result) {
+                        is StockAiClient.AiResult.Success -> result.text
+                        is StockAiClient.AiResult.Error -> "⚠ ${result.message}"
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Outlook thread crashed for $symbol", e)
+                    "⚠ AI analysis crashed: ${e.message ?: e.javaClass.simpleName}"
                 }
-                val escaped = text.replace("\\", "\\\\").replace("'", "\\'")
+                deliverAiCallback("window.onOutlookResult", text)
+            }
+        }
+
+        /**
+         * Deliver a text payload to a WebView JS callback. Escapes defensively and guards
+         * against the activity being destroyed mid-flight (old callback should no-op, not crash).
+         */
+        private fun deliverAiCallback(jsFn: String, text: String) {
+            val escaped = try {
+                text.replace("\\", "\\\\").replace("'", "\\'")
                     .replace("\n", "\\n").replace("\r", "")
-                runOnUiThread {
-                    webView.evaluateJavascript("window.onOutlookResult('$escaped')", null)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Escape failed", e)
+                "⚠ result encoding failed"
+            }
+            runOnUiThread {
+                try {
+                    if (!isFinishing && !isDestroyed) {
+                        webView.evaluateJavascript("$jsFn('$escaped')", null)
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "evaluateJavascript failed for $jsFn", e)
                 }
             }
         }
@@ -527,12 +616,17 @@ class MainActivity : AppCompatActivity() {
                 "source" to "zerodha",
                 "verdict" to h.verdict,
                 "buyScore" to (a?.buyScore ?: 0),
+                "profitScore" to (a?.profitScore ?: 0),
+                "protectScore" to (a?.protectScore ?: 0),
+                "sellIntent" to (a?.sellIntent ?: "HOLD"),
                 "sellScore" to (a?.sellScore ?: 0),
                 "macdPhase" to (a?.macdPhase ?: "—"),
                 "macdSlope" to (a?.macdSlope ?: 0.0),
                 "macdCurve" to (a?.macdCurve ?: emptyList<Double>()),
                 "buySignal" to (a?.buySignal ?: "—"),
                 "sellSignal" to (a?.sellSignal ?: "—"),
+                "support" to (a?.support ?: 0.0),
+                "resistance" to (a?.resistance ?: 0.0),
                 "hasAnalysis" to (a != null)
             ))
         }
@@ -545,7 +639,8 @@ class MainActivity : AppCompatActivity() {
             val totalPnl = totalCurrent - totalInvested
             val dayPnl = allHoldings.sumOf { (it["dayChange"] as? Double) ?: 0.0 }
             val sellAlerts = allHoldings.count {
-                ((it["sellScore"] as? Int) ?: 0) >= 45
+                val intent = (it["sellIntent"] as? String) ?: "HOLD"
+                intent != "HOLD"
             }
 
             val payload = mapOf(
@@ -656,16 +751,37 @@ class MainActivity : AppCompatActivity() {
         if (isServiceRunning) {
             btnMonitor.text = "⏹  Stop Monitoring"
             btnMonitor.setBackgroundColor(0xFFdc2626.toInt())
+        } else {
+            btnMonitor.text = "▶  Start Monitoring"
+            btnMonitor.setBackgroundColor(0xFF059669.toInt())
+        }
+
+        // Discovery scan status takes priority when running
+        val holder = ScanServiceResultHolder
+        if (holder.isDiscoveryRunning && holder.discoveryStatusText.isNotEmpty()) {
+            txtStatus.text = holder.discoveryStatusText
+            txtStatus.setTextColor(0xFF2563eb.toInt()) // blue for discovery
+            return
+        }
+
+        // Otherwise show portfolio monitoring status
+        if (isServiceRunning) {
             val lastScan = config.lastPortfolioScan
             val timeStr = if (lastScan > 0)
                 SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(lastScan)) else "—"
             txtStatus.text = "SignalScope · Monitoring · Last: $timeStr"
             txtStatus.setTextColor(0xFF059669.toInt())
         } else {
-            btnMonitor.text = "▶  Start Monitoring"
-            btnMonitor.setBackgroundColor(0xFF059669.toInt())
-            txtStatus.text = "SignalScope"
-            txtStatus.setTextColor(0xFF0f172a.toInt())
+            // Show cached discovery info if available
+            val cached = holder.lastDiscoveryResult
+            if (cached != null && cached.isComplete) {
+                val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(cached.timestamp))
+                txtStatus.text = "SignalScope · ${cached.market}: ${cached.allStocks.size} stocks · $timeStr"
+                txtStatus.setTextColor(0xFF64748b.toInt()) // grey — stale data indicator
+            } else {
+                txtStatus.text = "SignalScope"
+                txtStatus.setTextColor(0xFF0f172a.toInt())
+            }
         }
     }
 
@@ -717,4 +833,14 @@ class MainActivity : AppCompatActivity() {
 object ScanServiceResultHolder {
     @Volatile var lastDiscoveryResult: DiscoveryScanResult? = null
     @Volatile var lastZerodhaResult: com.signalscope.app.data.ScanResult? = null
+
+    // Polling-friendly state set by ScanService — no broadcasts needed
+    @Volatile var isDiscoveryRunning = false
+    @Volatile var discoveryProgress = 0
+    @Volatile var discoveryTotal = 0
+    @Volatile var discoveryMarket = ""
+    @Volatile var discoveryStatusText = ""
+    /** Incremented each time the service updates results — UI polls for changes */
+    @Volatile var discoveryVersion = 0L
+    @Volatile var portfolioVersion = 0L
 }

@@ -35,6 +35,7 @@ class AlertAdapter : ListAdapter<StockAlert, AlertAdapter.VH>(DIFF) {
         return VH(view)
     }
 
+    @Suppress("DEPRECATION")
     override fun onBindViewHolder(h: VH, position: Int) {
         val alert = getItem(position)
 
@@ -43,24 +44,23 @@ class AlertAdapter : ListAdapter<StockAlert, AlertAdapter.VH>(DIFF) {
         h.sellScore.text = alert.sellScore.toString()
         h.price.text = "₹${String.format("%.2f", alert.price)}"
 
-        // Color-code by alert type
+        // Color-code by alert type (new intent-based types)
         val (stripColor, badgeText, badgeTextColor) = when (alert.alertType) {
-            AlertType.STRONG_SELL -> Triple(0xFFdc2626.toInt(), "STRONG SELL", 0xFFdc2626.toInt())
-            AlertType.MODERATE_SELL -> Triple(0xFFf59e0b.toInt(), "MOD SELL", 0xFFf59e0b.toInt())
-            AlertType.SELL_FLIP -> Triple(0xFFef4444.toInt(), "SELL FLIP", 0xFFef4444.toInt())
-            AlertType.TREND_BREAK -> Triple(0xFFef4444.toInt(), "TREND BREAK", 0xFFef4444.toInt())
-            AlertType.BOOK_PROFIT -> Triple(0xFFf97316.toInt(), "BOOK PROFIT", 0xFFf97316.toInt())
-            AlertType.CONSECUTIVE_DECLINE -> Triple(0xFFef4444.toInt(), "DECLINING", 0xFFef4444.toInt())
-            AlertType.GOLDEN_BUY -> Triple(0xFFd97706.toInt(), "★ GOLDEN", 0xFFd97706.toInt())
-            AlertType.STRONG_BUY -> Triple(0xFF059669.toInt(), "BUY", 0xFF059669.toInt())
+            AlertType.STRONG_EXIT     -> Triple(0xFFdc2626.toInt(), "STRONG EXIT", 0xFFdc2626.toInt())
+            AlertType.BOOK_PROFIT     -> Triple(0xFFf97316.toInt(), "BOOK PROFIT", 0xFFf97316.toInt())
+            AlertType.PROTECT_CAPITAL -> Triple(0xFFeab308.toInt(), "PROTECT", 0xFFeab308.toInt())
+            AlertType.PEAK_WARNING    -> Triple(0xFF8b5cf6.toInt(), "PEAK WARNING", 0xFF8b5cf6.toInt())
+            AlertType.GOLDEN_BUY      -> Triple(0xFFd97706.toInt(), "★ GOLDEN", 0xFFd97706.toInt())
+            AlertType.STRONG_BUY      -> Triple(0xFF059669.toInt(), "BUY", 0xFF059669.toInt())
+            // Legacy types (deprecated but kept for existing alerts in memory)
+            else -> Triple(0xFF64748b.toInt(), alert.alertType.name, 0xFF64748b.toInt())
         }
 
         h.strip.setBackgroundColor(stripColor)
         h.badge.text = badgeText
         h.badge.setTextColor(badgeTextColor)
         h.sellScore.setTextColor(
-            if (alert.sellScore >= 65) 0xFFdc2626.toInt()
-            else if (alert.sellScore >= 45) 0xFFf59e0b.toInt()
+            if (alert.sellScore >= 35) 0xFFdc2626.toInt()
             else 0xFF94a3b8.toInt()
         )
     }

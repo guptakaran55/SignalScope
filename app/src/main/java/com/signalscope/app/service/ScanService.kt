@@ -14,7 +14,9 @@ import com.signalscope.app.ui.ScanServiceResultHolder
 import com.signalscope.app.network.ZerodhaClient
 import com.signalscope.app.ui.MainActivity
 import com.signalscope.app.util.StockAnalyzer
+import com.signalscope.app.util.ValueAnalyzer
 import kotlinx.coroutines.*
+import java.text.SimpleDateFormat
 import java.util.*
 
 /**
@@ -57,6 +59,7 @@ class ScanService : Service() {
         const val EXTRA_DISCOVERY_PROGRESS    = "discovery_progress"
         const val EXTRA_DISCOVERY_TOTAL       = "discovery_total"
         const val EXTRA_DISCOVERY_MARKET      = "discovery_market"
+        const val EXTRA_DISCOVERY_STATUS_TEXT = "discovery_status_text"
 
         fun createIntent(context: Context, action: String): Intent =
             Intent(context, ScanService::class.java).apply { this.action = action }
@@ -64,24 +67,50 @@ class ScanService : Service() {
 
     private lateinit var config: ConfigManager
     private lateinit var zerodhaClient: ZerodhaClient
+    private lateinit var weights: ScoringWeights
 
     private var portfolioJob: Job? = null
     private var discoveryJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // 30-min cooldown per symbol+alert type
+    // Tiered scan frequency: full analysis every FULL_SCAN_INTERVAL scans,
+    // quick scans (cached data) in between. Since daily indicators barely move
+    // intraday, we only need full Yahoo API hits once per hour.
+    private var scanCount = 0
+    private val FULL_SCAN_EVERY_N = 4  // full scan every 4th cycle (= ~1 hour at 15-min intervals)
+
+    // Alert deduplication: two strategies combined
+    // - L4/L5 (urgent): time-based cooldown (can re-fire same day if conditions persist)
+    // - L1/L2/L3 (slow-moving): once per trading day (daily indicators can't change intraday)
     private val recentAlerts = mutableMapOf<String, Long>()
-    // Cooldown per urgency level — L5 repeats sooner, L1 much later
+    private val dailyAlertsSent = mutableSetOf<String>() // keys: "symbol_alertType_YYYY-MM-dd"
+    private var lastTradingDate = "" // tracks date to reset dailyAlertsSent
+
+    /** Returns true if this alert is urgent enough to use time-based cooldowns (vs once-per-day). */
+    private fun isUrgentAlert(alertType: AlertType): Boolean = when (alertType) {
+        AlertType.STRONG_EXIT -> true     // Both scores firing — act now
+        AlertType.BOOK_PROFIT -> true     // MACD slope flipped — sell at peak
+        else -> false
+    }
+
+    // Cooldown only applies to urgent alerts — the rest use once-per-day
+    @Suppress("DEPRECATION")
     private fun alertCooldownMs(alertType: AlertType): Long = when (alertType) {
-        AlertType.STRONG_SELL         -> 15 * 60 * 1000L   // L5: 15 min — act NOW
-        AlertType.SELL_FLIP           -> 30 * 60 * 1000L   // L4: 30 min — inflection point
-        AlertType.TREND_BREAK         -> 2 * 60 * 60 * 1000L // L3: 2 hours — watch for confirmation
-        AlertType.BOOK_PROFIT         -> 4 * 60 * 60 * 1000L // L2: 4 hours — protect gains
-        AlertType.MODERATE_SELL       -> 4 * 60 * 60 * 1000L // L1: 4 hours — monitor
-        AlertType.CONSECUTIVE_DECLINE -> 8 * 60 * 60 * 1000L // L1: 8 hours — low priority
-        AlertType.GOLDEN_BUY          -> 2 * 60 * 60 * 1000L // Buy alert
-        AlertType.STRONG_BUY          -> 2 * 60 * 60 * 1000L // Buy alert
+        AlertType.STRONG_EXIT         -> 15 * 60 * 1000L   // Both scores — act NOW
+        AlertType.BOOK_PROFIT         -> 30 * 60 * 1000L   // MACD slope peak — sell for max profit
+        AlertType.PROTECT_CAPITAL     -> 24 * 60 * 60 * 1000L  // Structural break — once per day
+        AlertType.PEAK_WARNING        -> 24 * 60 * 60 * 1000L  // Prepare alert — once per day
+        AlertType.GOLDEN_BUY          -> 24 * 60 * 60 * 1000L
+        AlertType.STRONG_BUY          -> 24 * 60 * 60 * 1000L
+        // Legacy types — fallback 24h
+        else                          -> 24 * 60 * 60 * 1000L
+    }
+
+    private fun todayTradingDate(): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        sdf.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        return sdf.format(Date())
     }
 
     // ── Results accessible from UI ──
@@ -96,6 +125,7 @@ class ScanService : Service() {
         super.onCreate()
         config = ConfigManager(this)
         zerodhaClient = ZerodhaClient(config)
+        weights = config.scoringWeights
         createNotificationChannels()
     }
 
@@ -127,6 +157,7 @@ class ScanService : Service() {
     private fun startPortfolioMonitoring() {
         Log.i(TAG, "Starting portfolio monitoring")
         config.serviceRunning = true
+        YahooFinanceClient.clearCache() // fresh start — first scan will do full 2y fetch
 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SignalScope::ScanWakeLock").apply {
@@ -210,6 +241,8 @@ class ScanService : Service() {
 
         isDiscoveryRunning = true
         discoveryAbort = false
+        ScanServiceResultHolder.isDiscoveryRunning = true
+        ScanServiceResultHolder.discoveryMarket = if (market == "nifty500") "NIFTY 500" else "NASDAQ 100"
 
         discoveryJob?.cancel()
         discoveryJob = serviceScope.launch {
@@ -224,10 +257,13 @@ class ScanService : Service() {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Discovery scan error", e)
-                updateScanNotification("Discovery scan failed: ${e.message}")
+                val errMsg = "Discovery scan failed: ${e.message}"
+                updateScanNotification(errMsg)
+                ScanServiceResultHolder.discoveryStatusText = errMsg
             } finally {
                 isDiscoveryRunning = false
-                broadcastDiscoveryUpdate(market, -1, -1) // signal completion
+                ScanServiceResultHolder.isDiscoveryRunning = false
+                ScanServiceResultHolder.discoveryVersion++
             }
         }
     }
@@ -236,8 +272,10 @@ class ScanService : Service() {
         discoveryAbort = true
         discoveryJob?.cancel()
         isDiscoveryRunning = false
+        ScanServiceResultHolder.isDiscoveryRunning = false
+        ScanServiceResultHolder.discoveryStatusText = "Discovery scan stopped"
+        ScanServiceResultHolder.discoveryVersion++
         updateScanNotification("Discovery scan stopped")
-        broadcastDiscoveryUpdate("stopped", -1, -1)
     }
 
     /**
@@ -284,7 +322,12 @@ class ScanService : Service() {
         var consecutiveErrors = 0
         val retryQueue = mutableListOf<String>()
 
-        updateScanNotification("Discovery: $marketName — 0/$total scanned")
+        val startText = "Discovery: $marketName — 0/$total scanned"
+        updateScanNotification(startText)
+        ScanServiceResultHolder.discoveryProgress = 0
+        ScanServiceResultHolder.discoveryTotal = total
+        ScanServiceResultHolder.discoveryStatusText = startText
+        ScanServiceResultHolder.discoveryVersion++
         Log.i(TAG, "Discovery scan started: $marketName — $total symbols")
 
         // ── Main scan pass ──
@@ -295,8 +338,11 @@ class ScanService : Service() {
             }
 
             // If too many consecutive errors, bail to retry phase
-            if (consecutiveErrors >= 30) {
-                Log.w(TAG, "Discovery: $consecutiveErrors consecutive errors — queuing remaining for retry")
+            // (raised 30 → 50: the old threshold tripped too easily during Yahoo rate-limit spikes,
+            //  aborting the main pass with ~210 stocks unscanned — retry phase then often couldn't
+            //  catch up before hitting its own 20-error cap.)
+            if (consecutiveErrors >= 50) {
+                Log.w(TAG, "Discovery: $consecutiveErrors consecutive errors — queuing ${symbols.size - idx} remaining for retry phase")
                 retryQueue.addAll(symbols.subList(idx, symbols.size))
                 break
             }
@@ -308,14 +354,56 @@ class ScanService : Service() {
                 when (candleResult) {
                     is YahooFinanceClient.CandleResult.Success -> {
                         consecutiveErrors = 0
-                        val analysis = StockAnalyzer.analyze(
+                        var analysis = StockAnalyzer.analyze(
                             candles = candleResult.candles,
                             symbol = symbol,
                             name = symbol,
                             token = symbol,
-                            minAvgVolume = if (currency == "₹") 100000 else 50000
+                            minAvgVolume = if (currency == "₹") 100000 else 50000,
+                            w = weights
                         )
                         if (analysis != null) {
+                            // Fetch fundamentals for value analysis
+                            try {
+                                Log.d(TAG, "Fetching fundamentals for $symbol (exchange=$exchange)")
+                                val fundResult = YahooFinanceClient.fetchFundamentals(symbol, exchange)
+                                Log.d(TAG, "Fundamentals result for $symbol: ${fundResult::class.simpleName}")
+                                when (fundResult) {
+                                    is YahooFinanceClient.FundamentalResult.Success -> {
+                                        val vr = ValueAnalyzer.analyze(
+                                            fundamentals = fundResult.data,
+                                            currentPrice = analysis.price,
+                                            sectorMedianPe = null,
+                                            w = weights
+                                        )
+                                        Log.d(TAG, "Value score for $symbol: ${vr.valueScore} (${vr.valueRating}) PE=${vr.trailingPe} PB=${vr.priceToBook}")
+                                        analysis = analysis.copy(
+                                            trailingPe = vr.trailingPe,
+                                            priceToBook = vr.priceToBook,
+                                            evToEbitda = vr.evToEbitda,
+                                            debtToEquity = vr.debtToEquity,
+                                            roce = vr.roce,
+                                            dividendYield = vr.dividendYield,
+                                            operatingCashflow = vr.operatingCashflow,
+                                            netIncome = vr.netIncome,
+                                            fiftyTwoWeekLow = vr.fiftyTwoWeekLow,
+                                            fiftyTwoWeekHigh = vr.fiftyTwoWeekHigh,
+                                            sharesOutstanding = vr.sharesOutstanding,
+                                            hasBuyback = vr.hasBuyback,
+                                            valueScore = vr.valueScore,
+                                            valueRating = vr.valueRating
+                                        )
+                                    }
+                                    is YahooFinanceClient.FundamentalResult.RateLimited ->
+                                        Log.w(TAG, "Fundamentals rate limited for $symbol — skipping value data")
+                                    is YahooFinanceClient.FundamentalResult.NoData ->
+                                        Log.w(TAG, "No fundamental data for $symbol")
+                                    is YahooFinanceClient.FundamentalResult.Error ->
+                                        Log.w(TAG, "Fundamentals error for $symbol: ${fundResult.message}")
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Fundamentals fetch failed for $symbol — technical data kept", e)
+                            }
                             allStocks.add(analysis)
                         } else {
                             skipped++
@@ -369,11 +457,26 @@ class ScanService : Service() {
                     durationMs = System.currentTimeMillis() - startTime
                 )
                 ScanServiceResultHolder.lastDiscoveryResult = lastDiscoveryResult
+                ScanServiceResultHolder.discoveryProgress = idx + 1
+                ScanServiceResultHolder.discoveryTotal = total
+                // Honest status: attempted / total, with a breakdown of outcomes so the user
+                // understands why "analyzed" is lower than "attempted" (filtered, skipped, errored).
+                val analyzed = allStocks.size
+                val breakdown = "$analyzed ok · $skipped skip · $errors err"
+                ScanServiceResultHolder.discoveryStatusText =
+                    "Discovery $marketName: ${idx + 1}/$total — $breakdown"
+                ScanServiceResultHolder.discoveryVersion++
 
-                updateScanNotification(
-                    "Discovery: $marketName — ${idx + 1}/$total (${allStocks.size} analyzed)"
-                )
-                broadcastDiscoveryUpdate(marketName, idx + 1, total)
+                updateScanNotification(ScanServiceResultHolder.discoveryStatusText)
+
+                // Periodic disk save every 25 stocks — survives mid-scan process death (MIUI)
+                if ((idx + 1) % 25 == 0 && allStocks.isNotEmpty()) {
+                    try {
+                        DiscoveryResultStore.save(this@ScanService, lastDiscoveryResult!!)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Periodic save failed", e)
+                    }
+                }
 
                 // Pacing delay (only once — not double-delayed on rate limits)
                 delay(currentPace)
@@ -390,15 +493,22 @@ class ScanService : Service() {
 
         // ── Retry phase — re-scan rate-limited stocks at gentler pace ──
         if (retryQueue.isNotEmpty() && !discoveryAbort) {
-            Log.i(TAG, "Discovery retry phase: ${retryQueue.size} stocks, waiting 10s...")
-            updateScanNotification("Discovery: $marketName — retrying ${retryQueue.size} stocks...")
-            delay(10_000L) // let Yahoo rate limiter cool down
+            // 30s cool-down (was 10s) — gives Yahoo's rate limiter more time to reset.
+            // The old 10s often wasn't enough: retry phase would start still rate-limited and
+            // burn through its 20-error cap within the first few seconds.
+            Log.i(TAG, "Discovery retry phase: ${retryQueue.size} stocks, cooling down 30s...")
+            updateScanNotification("Discovery $marketName: cooling down 30s before retrying ${retryQueue.size}...")
+            delay(30_000L)
 
-            val retryPace = 1500L // 1.5s between retries
+            val retryPace = 2000L // 2s between retries (was 1.5s) — gentler on rate limiter
             var retryErrors = 0
 
             for ((rIdx, symbol) in retryQueue.withIndex()) {
-                if (discoveryAbort || retryErrors >= 20) break
+                // raised 20 → 40: rate-limit flutter during retry shouldn't abort prematurely
+                if (discoveryAbort || retryErrors >= 40) {
+                    if (retryErrors >= 40) Log.w(TAG, "Discovery retry: hit $retryErrors errors — giving up on remaining ${retryQueue.size - rIdx}")
+                    break
+                }
 
                 try {
                     val exchange = if (currency == "₹") "NSE" else "NASDAQ"
@@ -406,14 +516,30 @@ class ScanService : Service() {
 
                     when (candleResult) {
                         is YahooFinanceClient.CandleResult.Success -> {
-                            val analysis = StockAnalyzer.analyze(
+                            var analysis = StockAnalyzer.analyze(
                                 candles = candleResult.candles,
                                 symbol = symbol,
                                 name = symbol,
                                 token = symbol,
-                                minAvgVolume = if (currency == "₹") 100000 else 50000
+                                minAvgVolume = if (currency == "₹") 100000 else 50000,
+                                w = weights
                             )
                             if (analysis != null) {
+                                try {
+                                    val fundResult = YahooFinanceClient.fetchFundamentals(symbol, exchange)
+                                    if (fundResult is YahooFinanceClient.FundamentalResult.Success) {
+                                        val vr = ValueAnalyzer.analyze(fundResult.data, analysis.price, w = weights)
+                                        analysis = analysis.copy(
+                                            trailingPe = vr.trailingPe, priceToBook = vr.priceToBook,
+                                            evToEbitda = vr.evToEbitda, debtToEquity = vr.debtToEquity,
+                                            roce = vr.roce, dividendYield = vr.dividendYield,
+                                            operatingCashflow = vr.operatingCashflow, netIncome = vr.netIncome,
+                                            fiftyTwoWeekLow = vr.fiftyTwoWeekLow, fiftyTwoWeekHigh = vr.fiftyTwoWeekHigh,
+                                            sharesOutstanding = vr.sharesOutstanding, hasBuyback = vr.hasBuyback,
+                                            valueScore = vr.valueScore, valueRating = vr.valueRating
+                                        )
+                                    }
+                                } catch (_: Exception) {}
                                 allStocks.add(analysis)
                             } else {
                                 skipped++
@@ -449,10 +575,14 @@ class ScanService : Service() {
                         durationMs = System.currentTimeMillis() - startTime
                     )
                     ScanServiceResultHolder.lastDiscoveryResult = lastDiscoveryResult
-                    updateScanNotification(
-                        "Discovery: $marketName — retry ${rIdx + 1}/${retryQueue.size}"
-                    )
-                    broadcastDiscoveryUpdate(marketName, total - retryQueue.size + rIdx + 1, total)
+                    ScanServiceResultHolder.discoveryProgress = total - retryQueue.size + rIdx + 1
+                    // Retry status — show it's the retry phase so user doesn't think main scan is stuck
+                    val retryAnalyzed = allStocks.size
+                    ScanServiceResultHolder.discoveryStatusText =
+                        "Discovery $marketName — RETRY ${rIdx + 1}/${retryQueue.size} · $retryAnalyzed total ok · $retryErrors err"
+                    ScanServiceResultHolder.discoveryVersion++
+
+                    updateScanNotification(ScanServiceResultHolder.discoveryStatusText)
 
                     delay(retryPace)
 
@@ -490,10 +620,15 @@ class ScanService : Service() {
             durationMs = elapsed
         )
         ScanServiceResultHolder.lastDiscoveryResult = lastDiscoveryResult
+        ScanServiceResultHolder.discoveryVersion++
+
+        // Persist to disk so results survive process death
+        DiscoveryResultStore.save(this@ScanService, lastDiscoveryResult!!)
 
         val statusMsg = if (discoveryAbort) "Discovery stopped" else
             "Discovery done: ${allStocks.size} stocks in ${elapsed / 60000}m"
         updateScanNotification(statusMsg)
+        ScanServiceResultHolder.discoveryStatusText = statusMsg
         Log.i(TAG, "$statusMsg — ${sorted.count { it.buyScore >= 60 }} buy signals, " +
                 "${sorted.count { it.goldenBuy }} golden buys" +
                 if (retryQueue.isNotEmpty()) " (retried ${retryQueue.size})" else "")
@@ -510,11 +645,32 @@ class ScanService : Service() {
             return
         }
 
-        updateScanNotification("Scanning Zerodha portfolio...")
-        val result = scanZerodhaPortfolio()
+        scanCount++
+        val isFullScan = scanCount % FULL_SCAN_EVERY_N == 1 || scanCount == 1
+        val scanType = if (isFullScan) "Full scan" else "Quick scan"
+        updateScanNotification("$scanType: Zerodha portfolio...")
+
+        val result = if (isFullScan) {
+            // Full scan: fetch candles (cached 2y + 5d refresh), recompute all indicators
+            scanZerodhaPortfolio()
+        } else {
+            // Quick scan: re-fetch holdings for updated LTP, reuse cached candle data
+            // The fetchCandlesCached call is extremely cheap here — it only hits Yahoo
+            // for 5 days of data (or returns pure cache if recently refreshed)
+            scanZerodhaPortfolio()
+        }
+
         lastZerodhaResult = result
         ScanServiceResultHolder.lastZerodhaResult = result
-        processAlerts(result.alerts)
+        ScanServiceResultHolder.portfolioVersion++
+
+        if (isFullScan) {
+            // Full scan: process all alert types
+            processAlerts(result.alerts)
+        } else {
+            // Quick scan: only process urgent alerts (L4/L5) — L1-L3 already sent once today
+            processAlerts(result.alerts.filter { isUrgentAlert(it.alertType) })
+        }
 
         config.lastPortfolioScan = System.currentTimeMillis()
 
@@ -548,13 +704,16 @@ class ScanService : Service() {
 
         for (holding in rawHoldings) {
             try {
-                val candleResult = YahooFinanceClient.fetchCandles(holding.symbol, holding.exchange)
+                // Use cached candles for portfolio scans — avoids re-fetching 2y of
+                // daily data every 15 min. Only today's candle gets refreshed.
+                val candleResult = YahooFinanceClient.fetchCandlesCached(holding.symbol, holding.exchange)
                 when (candleResult) {
                     is YahooFinanceClient.CandleResult.Success -> {
                         val analysis = StockAnalyzer.analyze(
                             candles = candleResult.candles,
                             symbol = holding.symbol, name = holding.symbol,
-                            token = holding.symbol, minAvgVolume = 0
+                            token = holding.symbol, minAvgVolume = 0,
+                            w = weights
                         )
                         val verdict = computeVerdict(analysis, holding.totalReturnPct)
                         scannedHoldings.add(holding.copy(analysis = analysis, verdict = verdict))
@@ -595,16 +754,17 @@ class ScanService : Service() {
     // VERDICT + ALERTS (unchanged from your code)
     // ═══════════════════════════════════════════════════════
 
+    /** Verdict now uses the intent label from the dual scoring system. */
     private fun computeVerdict(analysis: StockAnalysis?, returnPct: Double): String {
         if (analysis == null) return "HOLD"
-        return when {
-            analysis.sellScore >= 65 -> "SELL NOW"
-            analysis.sellScore >= 45 -> "MOD SELL"
-            analysis.sellScore >= 30 && returnPct >= 25.0 -> "BOOK PROFIT?"
-            else -> "HOLD"
-        }
+        return analysis.sellIntent  // "STRONG EXIT", "BOOK PROFIT", "PROTECT CAPITAL", or "HOLD"
     }
 
+    /**
+     * Generate alerts from the dual scoring system.
+     * - Intent-based: STRONG_EXIT, BOOK_PROFIT, PROTECT_CAPITAL (from sellIntent)
+     * - Stage 1 warning: PEAK_WARNING (earlySell / EARLY SELL phase — prepare to sell)
+     */
     private fun generateAlerts(
         holding: PortfolioHolding, analysis: StockAnalysis,
         returnPct: Double
@@ -612,55 +772,54 @@ class ScanService : Service() {
         val source = "zerodha"
         val alerts = mutableListOf<StockAlert>()
 
-        if (analysis.sellScore >= config.strongSellAlertThreshold) {
-            alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
-                alertType = AlertType.STRONG_SELL,
-                message = "Sell score ${analysis.sellScore}/108 — ${analysis.sellSignal}",
+        // Intent-based alerts from dual scoring
+        when (analysis.sellIntent) {
+            "STRONG EXIT" -> alerts.add(StockAlert(
+                symbol = holding.symbol, name = holding.symbol,
+                alertType = AlertType.STRONG_EXIT,
+                message = "Profit ${analysis.profitScore}/58 + Protect ${analysis.protectScore}/58 — sell all",
                 sellScore = analysis.sellScore, buyScore = analysis.buyScore,
                 price = analysis.price, macdPhase = analysis.macdPhase, source = source))
-        }
-        if (analysis.sellScore >= config.sellScoreAlertThreshold &&
-            analysis.sellScore < config.strongSellAlertThreshold) {
-            alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
-                alertType = AlertType.MODERATE_SELL,
-                message = "Sell score ${analysis.sellScore}/108 — watch closely",
-                sellScore = analysis.sellScore, buyScore = analysis.buyScore,
-                price = analysis.price, macdPhase = analysis.macdPhase, source = source))
-        }
-        if (analysis.macdPhase == "SELL FLIP") {
-            alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
-                alertType = AlertType.SELL_FLIP, message = "MACD momentum just turned bearish",
-                sellScore = analysis.sellScore, buyScore = analysis.buyScore,
-                price = analysis.price, macdPhase = analysis.macdPhase, source = source))
-        }
-        if (analysis.sma200 != null && analysis.price < analysis.sma200) {
-            alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
-                alertType = AlertType.TREND_BREAK, message = "Price below SMA(200) — uptrend broken",
-                sellScore = analysis.sellScore, buyScore = analysis.buyScore,
-                price = analysis.price, macdPhase = analysis.macdPhase, source = source))
-        }
-        if (analysis.sellScore >= 30 && returnPct >= 25.0) {
-            alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
+
+            "BOOK PROFIT" -> alerts.add(StockAlert(
+                symbol = holding.symbol, name = holding.symbol,
                 alertType = AlertType.BOOK_PROFIT,
-                message = "Unrealized gain ${String.format(Locale.US, "%.1f", returnPct)}% + sell pressure building",
+                message = "Profit Booking ${analysis.profitScore}/58 — MACD slope reversed, sell 50-70%",
+                sellScore = analysis.sellScore, buyScore = analysis.buyScore,
+                price = analysis.price, macdPhase = analysis.macdPhase, source = source))
+
+            "PROTECT CAPITAL" -> alerts.add(StockAlert(
+                symbol = holding.symbol, name = holding.symbol,
+                alertType = AlertType.PROTECT_CAPITAL,
+                message = "Capital Protection ${analysis.protectScore}/58 — trend broken, exit position",
                 sellScore = analysis.sellScore, buyScore = analysis.buyScore,
                 price = analysis.price, macdPhase = analysis.macdPhase, source = source))
         }
-        // L1: Require 3+ down days AND meaningful drop (>1%) AND accelerating — avoids daily noise
-        if (analysis.upDays == 0 && analysis.priceVel < -1.0 && analysis.priceAccel < -0.3
-            && analysis.priceRoc3 < -3.0) {
-            alerts.add(StockAlert(symbol = holding.symbol, name = holding.symbol,
-                alertType = AlertType.CONSECUTIVE_DECLINE,
-                message = "3-day drop ${String.format(Locale.US, "%.1f", analysis.priceRoc3)}% with accelerating decline",
+
+        // Stage 1 warning: MACD decelerating (EARLY SELL phase) — prepare to sell
+        // Only fire if no stronger sell intent already generated
+        if (analysis.macdPhase == "EARLY SELL" && analysis.sellIntent == "HOLD") {
+            alerts.add(StockAlert(
+                symbol = holding.symbol, name = holding.symbol,
+                alertType = AlertType.PEAK_WARNING,
+                message = "MACD decelerating — peak may be approaching, prepare to sell",
                 sellScore = analysis.sellScore, buyScore = analysis.buyScore,
                 price = analysis.price, macdPhase = analysis.macdPhase, source = source))
         }
+
         return if (alerts.isNotEmpty()) alerts else null
     }
 
     private fun processAlerts(alerts: List<StockAlert>) {
         if (!config.notificationsEnabled) return
         val now = System.currentTimeMillis()
+        val today = todayTradingDate()
+
+        // Reset daily alert set on new trading day
+        if (today != lastTradingDate) {
+            dailyAlertsSent.clear()
+            lastTradingDate = today
+        }
 
         // Periodic cleanup: remove entries older than 24 hours to prevent unbounded growth
         if (recentAlerts.size > 100) {
@@ -669,11 +828,21 @@ class ScanService : Service() {
         }
 
         for (alert in alerts) {
-            val key = "${alert.symbol}_${alert.alertType}_${alert.source}"
-            val lastAlerted = recentAlerts[key] ?: 0L
-            if (now - lastAlerted > alertCooldownMs(alert.alertType)) {
-                sendAlertNotification(alert)
-                recentAlerts[key] = now
+            if (isUrgentAlert(alert.alertType)) {
+                // L4/L5: time-based cooldown — can re-fire if condition persists
+                val key = "${alert.symbol}_${alert.alertType}_${alert.source}"
+                val lastAlerted = recentAlerts[key] ?: 0L
+                if (now - lastAlerted > alertCooldownMs(alert.alertType)) {
+                    sendAlertNotification(alert)
+                    recentAlerts[key] = now
+                }
+            } else {
+                // L1/L2/L3: once per trading day — daily indicators don't change intraday
+                val dailyKey = "${alert.symbol}_${alert.alertType}_$today"
+                if (dailyKey !in dailyAlertsSent) {
+                    sendAlertNotification(alert)
+                    dailyAlertsSent.add(dailyKey)
+                }
             }
         }
     }
@@ -707,51 +876,47 @@ class ScanService : Service() {
         nm.notify(NOTIFICATION_SCAN_ID, buildScanNotification(text))
     }
 
+    @Suppress("DEPRECATION")
     private fun sendAlertNotification(alert: StockAlert) {
         val title = when (alert.alertType) {
-            AlertType.STRONG_SELL         -> "🔴 L5 SELL NOW: ${alert.symbol}"
-            AlertType.SELL_FLIP           -> "⚠️ L4 Momentum Flip: ${alert.symbol}"
-            AlertType.TREND_BREAK         -> "📉 L3 Trend Break: ${alert.symbol}"
-            AlertType.BOOK_PROFIT         -> "💰 L2 Book Profit: ${alert.symbol}"
-            AlertType.MODERATE_SELL       -> "🟡 L1 Watch: ${alert.symbol}"
-            AlertType.CONSECUTIVE_DECLINE -> "📉 L1 Declining: ${alert.symbol}"
-            AlertType.GOLDEN_BUY          -> "⭐ Golden Buy: ${alert.symbol}"
-            AlertType.STRONG_BUY          -> "🟢 Buy: ${alert.symbol}"
+            AlertType.STRONG_EXIT     -> "🔴 STRONG EXIT: ${alert.symbol}"
+            AlertType.BOOK_PROFIT     -> "💰 BOOK PROFIT: ${alert.symbol}"
+            AlertType.PROTECT_CAPITAL -> "🛡️ PROTECT CAPITAL: ${alert.symbol}"
+            AlertType.PEAK_WARNING    -> "⚡ Peak Approaching: ${alert.symbol}"
+            AlertType.GOLDEN_BUY      -> "⭐ Golden Buy: ${alert.symbol}"
+            AlertType.STRONG_BUY      -> "🟢 Buy: ${alert.symbol}"
+            else -> "📊 ${alert.alertType}: ${alert.symbol}"
         }
         val priority = when (alert.alertType) {
-            AlertType.STRONG_SELL         -> NotificationCompat.PRIORITY_MAX    // L5
-            AlertType.SELL_FLIP           -> NotificationCompat.PRIORITY_HIGH   // L4
-            AlertType.TREND_BREAK         -> NotificationCompat.PRIORITY_HIGH   // L3
-            AlertType.BOOK_PROFIT         -> NotificationCompat.PRIORITY_DEFAULT // L2
-            AlertType.MODERATE_SELL       -> NotificationCompat.PRIORITY_DEFAULT // L1
-            AlertType.CONSECUTIVE_DECLINE -> NotificationCompat.PRIORITY_LOW    // L1
-            else -> NotificationCompat.PRIORITY_DEFAULT
+            AlertType.STRONG_EXIT     -> NotificationCompat.PRIORITY_MAX
+            AlertType.BOOK_PROFIT     -> NotificationCompat.PRIORITY_HIGH
+            AlertType.PROTECT_CAPITAL -> NotificationCompat.PRIORITY_HIGH
+            AlertType.PEAK_WARNING    -> NotificationCompat.PRIORITY_DEFAULT
+            AlertType.GOLDEN_BUY      -> NotificationCompat.PRIORITY_DEFAULT
+            AlertType.STRONG_BUY      -> NotificationCompat.PRIORITY_DEFAULT
+            else -> NotificationCompat.PRIORITY_LOW
         }
-        // Color tint for notification icon & header — visually distinguishes urgency
         val alertColor = when (alert.alertType) {
-            AlertType.STRONG_SELL         -> 0xFFDC2626.toInt()  // L5: Red
-            AlertType.SELL_FLIP           -> 0xFFF97316.toInt()  // L4: Orange
-            AlertType.TREND_BREAK         -> 0xFFEAB308.toInt()  // L3: Yellow
-            AlertType.BOOK_PROFIT         -> 0xFF8B5CF6.toInt()  // L2: Purple
-            AlertType.MODERATE_SELL       -> 0xFF64748B.toInt()  // L1: Slate grey
-            AlertType.CONSECUTIVE_DECLINE -> 0xFF64748B.toInt()  // L1: Slate grey
-            AlertType.GOLDEN_BUY          -> 0xFFD97706.toInt()  // Gold
-            AlertType.STRONG_BUY          -> 0xFF059669.toInt()  // Green
+            AlertType.STRONG_EXIT     -> 0xFFDC2626.toInt()  // Red
+            AlertType.BOOK_PROFIT     -> 0xFFF97316.toInt()  // Orange
+            AlertType.PROTECT_CAPITAL -> 0xFFEAB308.toInt()  // Yellow
+            AlertType.PEAK_WARNING    -> 0xFF8B5CF6.toInt()  // Purple
+            AlertType.GOLDEN_BUY      -> 0xFFD97706.toInt()  // Gold
+            AlertType.STRONG_BUY      -> 0xFF059669.toInt()  // Green
+            else -> 0xFF64748B.toInt()
         }
 
         val levelTag = when (alert.alertType) {
-            AlertType.STRONG_SELL         -> "⏱ Act within hours"
-            AlertType.SELL_FLIP           -> "⏱ Act within 1-2 days"
-            AlertType.TREND_BREAK         -> "⏱ Watch 2-5 days for confirmation"
-            AlertType.BOOK_PROFIT         -> "⏱ Consider over coming days"
-            AlertType.MODERATE_SELL       -> "⏱ Monitor over days"
-            AlertType.CONSECUTIVE_DECLINE -> "⏱ Low urgency — monitor"
+            AlertType.STRONG_EXIT     -> "⏱ Sell all — both scores firing"
+            AlertType.BOOK_PROFIT     -> "⏱ Sell 50-70%, trail the rest"
+            AlertType.PROTECT_CAPITAL -> "⏱ Sell entire position — trend broken"
+            AlertType.PEAK_WARNING    -> "⏱ Prepare to sell — MACD slope may flip soon"
             else -> ""
         }
 
         val bigBody = buildString {
             append(alert.message)
-            append("\n₹${String.format(Locale.US, "%.2f", alert.price)} · Sell ${alert.sellScore} · ${alert.macdPhase}")
+            append("\n₹${String.format(Locale.US, "%.2f", alert.price)} · ${alert.macdPhase}")
             if (levelTag.isNotEmpty()) append("\n$levelTag")
         }
 
@@ -763,16 +928,16 @@ class ScanService : Service() {
             .setStyle(NotificationCompat.BigTextStyle().bigText(bigBody))
             .setSmallIcon(android.R.drawable.ic_dialog_alert).setContentIntent(pi)
             .setColor(alertColor)
-            .setColorized(alert.alertType == AlertType.STRONG_SELL) // L5 gets fully colored background
+            .setColorized(alert.alertType == AlertType.STRONG_EXIT)
             .setPriority(priority).setAutoCancel(true)
             .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
             .apply {
                 if (config.vibrateOnAlerts) {
                     when (alert.alertType) {
-                        AlertType.STRONG_SELL -> setVibrate(longArrayOf(0, 400, 150, 400, 150, 400)) // L5: urgent triple buzz
-                        AlertType.SELL_FLIP   -> setVibrate(longArrayOf(0, 300, 100, 300))           // L4: double buzz
-                        AlertType.TREND_BREAK -> setVibrate(longArrayOf(0, 250, 100, 250))           // L3: double buzz
-                        else -> {}  // L2/L1: silent — no vibration for low urgency
+                        AlertType.STRONG_EXIT     -> setVibrate(longArrayOf(0, 400, 150, 400, 150, 400))
+                        AlertType.BOOK_PROFIT     -> setVibrate(longArrayOf(0, 300, 100, 300))
+                        AlertType.PROTECT_CAPITAL -> setVibrate(longArrayOf(0, 250, 100, 250))
+                        else -> {}
                     }
                 }
             }
@@ -798,11 +963,12 @@ class ScanService : Service() {
         })
     }
 
-    private fun broadcastDiscoveryUpdate(market: String, progress: Int, total: Int) {
+    private fun broadcastDiscoveryUpdate(market: String, progress: Int, total: Int, statusText: String = "") {
         sendBroadcast(Intent(BROADCAST_DISCOVERY_UPDATE).apply {
             putExtra(EXTRA_DISCOVERY_MARKET, market)
             putExtra(EXTRA_DISCOVERY_PROGRESS, progress)
             putExtra(EXTRA_DISCOVERY_TOTAL, total)
+            putExtra(EXTRA_DISCOVERY_STATUS_TEXT, statusText)
         })
     }
 
@@ -817,7 +983,7 @@ class ScanService : Service() {
         return ScanResult(market = "zerodha", startTime = startTime, totalScanned = holdings.size,
             holdings = holdings, alerts = alerts, durationMs = System.currentTimeMillis() - startTime,
             totalInvested = totalInvested, totalCurrent = totalCurrent, totalPnl = totalCurrent - totalInvested,
-            sellAlertCount = alerts.count { it.alertType == AlertType.STRONG_SELL || it.alertType == AlertType.MODERATE_SELL })
+            sellAlertCount = alerts.count { it.alertType == AlertType.STRONG_EXIT || it.alertType == AlertType.BOOK_PROFIT || it.alertType == AlertType.PROTECT_CAPITAL })
     }
 
     private fun emptyScanResult(startTime: Long) = ScanResult(

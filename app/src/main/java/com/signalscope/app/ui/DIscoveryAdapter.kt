@@ -42,7 +42,7 @@ class DiscoveryAdapter : ListAdapter<StockAnalysis, DiscoveryAdapter.VH>(DIFF) {
         val s = getItem(position)
         val layout = h.itemView as LinearLayout
 
-        // Symbol + signal
+        // Symbol + signal (buy-only for discovery — you don't own these stocks)
         (layout.getChildAt(0) as? LinearLayout)?.let { row1 ->
             (row1.getChildAt(0) as? TextView)?.text = s.symbol
             (row1.getChildAt(1) as? TextView)?.apply {
@@ -50,16 +50,12 @@ class DiscoveryAdapter : ListAdapter<StockAnalysis, DiscoveryAdapter.VH>(DIFF) {
                     s.goldenBuy -> "★ GOLDEN"
                     s.buyScore >= 75 -> "STRONG BUY"
                     s.buyScore >= 60 -> "MOD BUY"
-                    s.sellScore >= 65 -> "STRONG SELL"
-                    s.sellScore >= 45 -> "MOD SELL"
-                    else -> "HOLD"
+                    else -> "—"
                 }
                 setTextColor(when {
                     s.goldenBuy -> 0xFFd97706.toInt()
                     s.buyScore >= 75 -> 0xFF059669.toInt()
                     s.buyScore >= 60 -> 0xFF0891b2.toInt()
-                    s.sellScore >= 65 -> 0xFFdc2626.toInt()
-                    s.sellScore >= 45 -> 0xFFf87171.toInt()
                     else -> 0xFF94a3b8.toInt()
                 })
             }
@@ -68,23 +64,23 @@ class DiscoveryAdapter : ListAdapter<StockAnalysis, DiscoveryAdapter.VH>(DIFF) {
         // Price
         (layout.getChildAt(1) as? TextView)?.text = "$currency${String.format("%.2f", s.price)}"
 
-        // Scores row
+        // Scores row (buy-only for discovery — sell scores not relevant for unowned stocks)
         (layout.getChildAt(2) as? LinearLayout)?.let { row2 ->
             (row2.getChildAt(0) as? TextView)?.apply {
                 text = "Buy ${s.buyScore}"
                 setTextColor(if (s.buyScore >= 60) 0xFF059669.toInt() else 0xFF64748b.toInt())
             }
             (row2.getChildAt(1) as? TextView)?.apply {
-                text = "Sell ${s.sellScore}"
-                setTextColor(if (s.sellScore >= 45) 0xFFdc2626.toInt() else 0xFF64748b.toInt())
-            }
-            (row2.getChildAt(2) as? TextView)?.apply {
                 text = s.macdPhase
                 setTextColor(when (s.macdPhase) {
                     "BUY FLIP", "EARLY BUY", "BULLISH" -> 0xFF059669.toInt()
                     "SELL FLIP", "EARLY SELL", "BEARISH" -> 0xFFdc2626.toInt()
                     else -> 0xFF94a3b8.toInt()
                 })
+            }
+            // Third slot now empty — hide it
+            (row2.getChildAt(2) as? TextView)?.apply {
+                text = ""
             }
         }
 

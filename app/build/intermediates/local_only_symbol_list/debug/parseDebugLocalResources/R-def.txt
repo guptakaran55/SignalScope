@@ -32,7 +32,8 @@ id discoverySection
 id holdBuyScore
 id holdInfo
 id holdPhase
-id holdSellScore
+id holdProfitScore
+id holdProtectScore
 id holdSymbol
 id holdVerdict
 id holdingsList
@@ -63,5 +64,6 @@ mipmap ic_launcher_foreground
 mipmap ic_launcher_round
 string app_name
 style Theme.SignalScope
+xml backup_rules
 xml file_paths
 xml network_security_config

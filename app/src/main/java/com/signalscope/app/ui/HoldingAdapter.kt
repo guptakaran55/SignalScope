@@ -25,7 +25,8 @@ class HoldingAdapter : ListAdapter<PortfolioHolding, HoldingAdapter.VH>(DIFF) {
         val phase: TextView = view.findViewById(R.id.holdPhase)
         val info: TextView = view.findViewById(R.id.holdInfo)
         val buyScore: TextView = view.findViewById(R.id.holdBuyScore)
-        val sellScore: TextView = view.findViewById(R.id.holdSellScore)
+        val profitScore: TextView = view.findViewById(R.id.holdProfitScore)
+        val protectScore: TextView = view.findViewById(R.id.holdProtectScore)
         val verdict: TextView = view.findViewById(R.id.holdVerdict)
     }
 
@@ -49,32 +50,43 @@ class HoldingAdapter : ListAdapter<PortfolioHolding, HoldingAdapter.VH>(DIFF) {
                 else -> 0xFF94a3b8.toInt()
             }
             h.phase.setTextColor(phaseColor)
-            h.buyScore.text = a.buyScore.toString()
-            h.sellScore.text = a.sellScore.toString()
 
+            // Buy score
+            h.buyScore.text = a.buyScore.toString()
             h.buyScore.setTextColor(
                 if (a.buyScore >= 75) 0xFF059669.toInt()
                 else if (a.buyScore >= 60) 0xFF0891b2.toInt()
                 else 0xFF64748b.toInt()
             )
-            h.sellScore.setTextColor(
-                if (a.sellScore >= 65) 0xFFdc2626.toInt()
-                else if (a.sellScore >= 45) 0xFFf59e0b.toInt()
-                else 0xFF64748b.toInt()
+
+            // Profit Booking score (Sub-score A)
+            h.profitScore.text = "P${a.profitScore}"
+            h.profitScore.setTextColor(
+                if (a.profitScore >= 35) 0xFFf97316.toInt()    // Orange — active
+                else 0xFF64748b.toInt()                         // Grey — dormant
+            )
+
+            // Capital Protection score (Sub-score B)
+            h.protectScore.text = "C${a.protectScore}"
+            h.protectScore.setTextColor(
+                if (a.protectScore >= 35) 0xFFdc2626.toInt()   // Red — active
+                else 0xFF64748b.toInt()                         // Grey — dormant
             )
         } else {
             h.phase.visibility = View.GONE
             h.buyScore.text = "—"
-            h.sellScore.text = "—"
+            h.profitScore.text = "—"
+            h.protectScore.text = "—"
             h.buyScore.setTextColor(0xFF64748b.toInt())
-            h.sellScore.setTextColor(0xFF64748b.toInt())
+            h.profitScore.setTextColor(0xFF64748b.toInt())
+            h.protectScore.setTextColor(0xFF64748b.toInt())
         }
 
         h.verdict.text = holding.verdict
         val (verdictColor, verdictBg) = when (holding.verdict) {
-            "SELL NOW" -> 0xFFdc2626.toInt() to 0xFF1a0808.toInt()
-            "MOD SELL" -> 0xFFf87171.toInt() to 0xFF1a0808.toInt()
-            "BOOK PROFIT?" -> 0xFFf97316.toInt() to 0xFF1a0d08.toInt()
+            "STRONG EXIT" -> 0xFFdc2626.toInt() to 0xFF1a0808.toInt()
+            "BOOK PROFIT" -> 0xFFf97316.toInt() to 0xFF1a0d08.toInt()
+            "PROTECT CAPITAL" -> 0xFFeab308.toInt() to 0xFF1a1508.toInt()
             else -> 0xFF94a3b8.toInt() to 0xFF0f172a.toInt()
         }
         h.verdict.setTextColor(verdictColor)

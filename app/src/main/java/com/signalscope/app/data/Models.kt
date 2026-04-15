@@ -101,6 +101,13 @@ data class StockAnalysis(
 
     val buyScore: Int,
     val buySignal: String,
+
+    // Dual sell scoring system — replaces single sellScore
+    val profitScore: Int,       // Sub-score A: Profit Booking (max ~58)
+    val protectScore: Int,      // Sub-score B: Capital Protection (max ~58)
+    val sellIntent: String,     // "STRONG EXIT" | "BOOK PROFIT" | "PROTECT CAPITAL" | "HOLD"
+
+    // Legacy sellScore kept for backward compatibility (= max of profitScore, protectScore)
     val sellScore: Int,
     val sellSignal: String,
 
@@ -108,7 +115,25 @@ data class StockAnalysis(
     val isBuy: Boolean,
     val isModerateBuy: Boolean,
     val isSell: Boolean,
-    val isModerateSell: Boolean
+    val isModerateSell: Boolean,
+
+    // ── Value Analysis (fundamental) ──
+    val trailingPe: Double? = null,
+    val priceToBook: Double? = null,
+    val evToEbitda: Double? = null,
+    val debtToEquity: Double? = null,
+    val roce: Double? = null,             // Return on Capital Employed
+    val dividendYield: Double? = null,    // as percentage
+    val operatingCashflow: Double? = null,
+    val netIncome: Double? = null,
+    val fiftyTwoWeekLow: Double? = null,
+    val fiftyTwoWeekHigh: Double? = null,
+    val sharesOutstanding: Long? = null,
+    val sectorMedianPe: Double? = null,   // populated per-scan from sector grouping
+    val hasBuyback: Boolean = false,
+
+    val valueScore: Int = 0,              // 0–100 fundamental value score
+    val valueRating: String = "N/A"       // "DEEP VALUE" / "MODERATE VALUE" / "MILD VALUE" / "NOT ATTRACTIVE" / "N/A"
 )
 
 // ═══════════════════════════════════════════════════════
@@ -116,14 +141,22 @@ data class StockAnalysis(
 // ═══════════════════════════════════════════════════════
 
 enum class AlertType {
-    STRONG_SELL,
-    MODERATE_SELL,
-    SELL_FLIP,
-    TREND_BREAK,
-    BOOK_PROFIT,
-    CONSECUTIVE_DECLINE,
+    // Intent-based sell alerts (derived from dual scoring)
+    STRONG_EXIT,        // profitScore ≥ 35 AND protectScore ≥ 35 — sell all
+    BOOK_PROFIT,        // profitScore ≥ 35 AND protectScore < 35 — sell 50-70%, trail rest
+    PROTECT_CAPITAL,    // protectScore ≥ 35 AND profitScore < 35 — sell all, trend broken
+    PEAK_WARNING,       // earlySell (MACD decelerating) — prepare to sell soon
+
+    // Buy alerts
     GOLDEN_BUY,
-    STRONG_BUY
+    STRONG_BUY,
+
+    // Legacy (kept for backward compat, mapped to new types internally)
+    @Deprecated("Use STRONG_EXIT") STRONG_SELL,
+    @Deprecated("Use BOOK_PROFIT") MODERATE_SELL,
+    @Deprecated("Use PROTECT_CAPITAL") SELL_FLIP,
+    @Deprecated("Use PROTECT_CAPITAL") TREND_BREAK,
+    @Deprecated("Use PROTECT_CAPITAL") CONSECUTIVE_DECLINE
 }
 
 data class StockAlert(

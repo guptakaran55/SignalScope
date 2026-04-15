@@ -1,6 +1,7 @@
 package com.signalscope.app.util
 
 import com.signalscope.app.data.CandleData
+import com.signalscope.app.data.ScoringWeights
 import com.signalscope.app.data.StockAnalysis
 import kotlin.math.abs
 import kotlin.math.min
@@ -18,7 +19,8 @@ object StockAnalyzer {
         symbol: String,
         name: String,
         token: String,
-        minAvgVolume: Int = 100000
+        minAvgVolume: Int = 100000,
+        w: ScoringWeights = ScoringWeights()
     ): StockAnalysis? {
         val n = candles.size
         if (n < 50) return null
@@ -50,7 +52,7 @@ object StockAnalyzer {
                 sma200Prev = smaValues[smaValues.size - 2]
                 sma200Slope = if (sma200Val != null && sma200Prev != null) sma200Val - sma200Prev else 0.0
                 smaLabel = "SMA(200)"
-                smaMaxPts = 25
+                smaMaxPts = w.buySma200Pts
             }
             hasSma50 -> {
                 smaValues = Indicators.sma(closes, 50)
@@ -58,7 +60,7 @@ object StockAnalyzer {
                 sma200Prev = if (smaValues.size >= 2) smaValues[smaValues.size - 2] else sma200Val
                 sma200Slope = if (sma200Val != null && sma200Prev != null) sma200Val - sma200Prev else 0.0
                 smaLabel = "SMA(50) fallback"
-                smaMaxPts = 15
+                smaMaxPts = w.buySma50Pts
             }
             else -> {
                 sma200Val = null; sma200Prev = null; sma200Slope = 0.0
@@ -80,6 +82,17 @@ object StockAnalyzer {
         // ── RSI ──
         val rsiValues = Indicators.rsi(closes, 14)
         val rsiVal = rsiValues.lastOrNull { it != null }
+        // Multi-day RSI for flip detection
+        val rsiToday = rsiVal
+        val rsiYesterday = if (rsiValues.size >= 2) rsiValues[rsiValues.size - 2] else null
+        val rsi2DaysAgo = if (rsiValues.size >= 3) rsiValues[rsiValues.size - 3] else null
+
+        // RSI momentum flip: detects the exact day RSI changes direction
+        val rsiBuyFlip = rsiToday != null && rsiYesterday != null && rsi2DaysAgo != null &&
+                rsiToday > rsiYesterday && rsiYesterday <= rsi2DaysAgo  // just turned UP
+
+        val rsiSellFlip = rsiToday != null && rsiYesterday != null && rsi2DaysAgo != null &&
+                rsiToday < rsiYesterday && rsiYesterday >= rsi2DaysAgo  // just turned DOWN
 
         // ── Bollinger Bands ──
         val bb = Indicators.bollingerBands(closes, 20, 2.0)
@@ -196,47 +209,50 @@ object StockAnalyzer {
         // 2. MACD Inflection
         val goldenBuy = macdLowPct >= 60 && macdSlope <= 0.2 && sma200Slope > 0.1
         val macdInfPts = when {
-            goldenBuy -> 30
-            macdZeroCrossUp && macdAccel > 0 -> 30
-            slopeCrossUp -> 20
-            earlyBuy -> 10
+            goldenBuy -> w.buyGoldenBuyPts
+            macdZeroCrossUp && macdAccel > 0 -> w.buyMacdZeroCrossUpPts
+            slopeCrossUp -> w.buySlopeCrossUpPts
+            earlyBuy -> w.buyEarlyBuyPts
             else -> 0
         }
-        val goldenBonus = if (goldenBuy) 10 else 0
-        val pctlBonus = if (macdPctl <= 25 && macdInfPts > 0) 3 else 0
+        val goldenBonus = if (goldenBuy) w.buyGoldenBonus else 0
+        val pctlBonus = if (macdPctl <= w.buyMacdPctlThreshold && macdInfPts > 0) w.buyMacdPctlBonus else 0
         buyScore += macdInfPts + goldenBonus + pctlBonus
 
-        // 3. RSI graduated scoring
+        // 3. RSI graduated scoring + momentum flip bonus
         var rsiPts = 0
         if (rsiVal != null) {
             val r = rsiVal
             rsiPts = when {
                 r in 25.0..55.0 -> {
                     if (r <= 35.0) (5 + 15 * (r - 25) / 10).toInt()
-                    else (20 * (55 - r) / 20).toInt()
+                    else (w.buyRsiMaxPts * (55 - r) / 20).toInt()
                 }
                 r < 25.0 -> 3
                 else -> 0
-            }.coerceIn(0, 20)
+            }.coerceIn(0, w.buyRsiMaxPts)
         }
-        buyScore += rsiPts
+        // RSI flip bonus: RSI just turned upward while in oversold zone
+        val rsiBuyFlipPts = if (rsiBuyFlip && rsiVal != null &&
+            rsiVal in w.buyRsiFlipLow..w.buyRsiFlipHigh) w.buyRsiFlipBonus else 0
+        buyScore += rsiPts + rsiBuyFlipPts
 
         // 4. Bollinger Bands
         val bbPass = belowMidBand || touchedLowerBand
-        val bbPts = if (bbPass) 10 + (if (touchedLowerBand) 5 else 0) else 0
+        val bbPts = if (bbPass) w.buyBbBasePts + (if (touchedLowerBand) w.buyBbLowerBonus else 0) else 0
         buyScore += bbPts
 
         // 5. ADX with directional check
-        val adxStrong = currAdx > 25
-        val adxVeryStrong = currAdx > 30
+        val adxStrong = currAdx > w.buyAdxStrongThreshold
+        val adxVeryStrong = currAdx > w.buyAdxVeryStrongThreshold
         val adxPts = if (adxStrong && bullishTrend) {
-            15 + (if (adxVeryStrong) 5 else 0)
+            w.buyAdxBasePts + (if (adxVeryStrong) w.buyAdxVeryStrongBonus else 0)
         } else 0
         buyScore += adxPts
 
         // 6. OBV
         val obvPass = obvCurrent > obv5 && obvCurrent > obv20
-        val obvPts = if (obvPass) 5 else 0
+        val obvPts = if (obvPass) w.buyObvPts else 0
         buyScore += obvPts
 
         // 7. EMA(21) proximity
@@ -244,79 +260,113 @@ object StockAnalyzer {
         if (ema21Val != null) {
             val d = ema21PctDiff
             emaPts = when {
-                d < -3 -> 3              // Deep pullback — risky, small reward
-                d in -3.0..0.0 -> 10     // Below EMA but trend intact — best entry (discount buy)
-                d in 0.0..2.0 -> 8       // Sitting near EMA — good entry
-                d in 2.0..4.0 -> 5       // Slightly stretched
-                d in 4.0..7.0 -> 2       // Stretched — wait for pullback
-                else -> 0                // Overextended — skip
+                d < -3 -> 3
+                d in -3.0..0.0 -> w.buyEmaMaxPts
+                d in 0.0..2.0 -> (w.buyEmaMaxPts * 0.8).toInt()
+                d in 2.0..4.0 -> (w.buyEmaMaxPts * 0.5).toInt()
+                d in 4.0..7.0 -> (w.buyEmaMaxPts * 0.2).toInt()
+                else -> 0
             }
         }
         buyScore += emaPts
 
         val buySignal = when {
-            buyScore >= 75 -> "STRONG BUY"
-            buyScore >= 60 -> "MODERATE BUY"
+            buyScore >= w.buyStrongThreshold -> "STRONG BUY"
+            buyScore >= w.buyModerateThreshold -> "MODERATE BUY"
             else -> "NO SIGNAL"
         }
 
-        // ═══════════════════════════════════════════════════
-        // SELL SCORE
-        // ═══════════════════════════════════════════════════
-        var sellScore = 0
+        // ═══════════════════════════════════════════════════════
+        // SUB-SCORE A: PROFIT BOOKING (max ~58 pts)
+        // Intent: sell at MACD slope peak to capture max profit
+        // Fires only when price > SMA200 (uptrend intact)
+        // ═══════════════════════════════════════════════════════
+        var profitScore = 0
 
-        // 1. SMA break
-        val smaSellPass = sma200Val != null && price < sma200Val
-        val smaSellPts = if (smaSellPass) 25 else 0
-        sellScore += smaSellPts
-
-        // 2. MACD sell inflection
-        val sellMacdPts = when {
-            macdZeroCrossDn && macdAccel < 0 -> 25
-            slopeCrossDn -> 18
-            earlySell -> 8
+        // 1. MACD momentum — MUTUALLY EXCLUSIVE, take highest
+        val profitMacdPts = when {
+            slopeCrossDn -> w.profitSlopeCrossDnPts
+            earlySell -> w.profitEarlySellPts
+            macdZeroCrossDn && macdAccel < 0 -> w.profitMacdZeroCrossDnPts
             else -> 0
         }
-        val sellPctlBonus = if (macdPctl >= 75 && sellMacdPts > 0) 3 else 0
-        sellScore += sellMacdPts + sellPctlBonus
+        val profitPctlBonus = if (macdPctl >= w.profitMacdPctlThreshold && profitMacdPts > 0) w.profitMacdPctlBonus else 0
+        profitScore += profitMacdPts + profitPctlBonus
 
-        // 3. RSI overbought
-        val rsiSellPts = if (rsiVal != null) {
+        // 2. RSI overbought confirmation + momentum flip bonus
+        val rsiProfitPts = if (rsiVal != null) {
             when {
-                rsiVal > 85.0 -> 10
-                rsiVal >= 70.0 -> 20
-                rsiVal >= 65.0 -> 15
-                rsiVal >= 60.0 -> 8
+                rsiVal > w.profitRsiExtremeThreshold -> w.profitRsiExtremePts
+                rsiVal >= w.profitRsiOverboughtThreshold -> w.profitRsiOverboughtPts
+                rsiVal >= w.profitRsiMildThreshold -> w.profitRsiMildPts
+                rsiVal >= w.profitRsiNoiseThreshold -> w.profitRsiNoisePts
                 else -> 0
             }
         } else 0
-        sellScore += rsiSellPts
+        // RSI flip bonus: RSI just turned downward while overbought
+        val rsiProfitFlipPts = if (rsiSellFlip && rsiProfitPts > 0) w.profitRsiFlipBonus else 0
+        profitScore += rsiProfitPts + rsiProfitFlipPts
 
-        // 4. Bollinger stretch
+        // 3. Bollinger stretch
         val bbSellUpper = bbUpper != null && price >= bbUpper
-        val bbSellPts = when {
-            bbSellUpper -> 10
-            touchedUpperBand -> 5
+        val bbProfitPts = when {
+            bbSellUpper -> w.profitBbUpperPts
+            touchedUpperBand -> w.profitBbTouchedPts
             else -> 0
         }
-        sellScore += bbSellPts
+        profitScore += bbProfitPts
 
-        // 5. ADX bearish
+        // ═══════════════════════════════════════════════════════
+        // SUB-SCORE B: CAPITAL PROTECTION (max ~58 pts)
+        // Intent: get out before structural damage — trend broken
+        // ═══════════════════════════════════════════════════════
+        var protectScore = 0
+
+        // 1. Price below SMA200 — primary structural break
+        val smaSellPass = sma200Val != null && price < sma200Val
+        val smaProtectPts = if (smaSellPass) w.protectSma200Pts else 0
+        protectScore += smaProtectPts
+        // SMA200 slope declining — bonus (confirms direction, doesn't gate)
+        val sma200SlopeBonus = if (smaSellPass && sma200Slope < 0) w.protectSma200SlopeBonus else 0
+        protectScore += sma200SlopeBonus
+
+        // 2. ADX bearish — MUTUALLY EXCLUSIVE tiers
         val bearishTrend = currMinusDi > currPlusDi
-        val adxSellPts = if (currAdx > 25 && bearishTrend) {
-            10 + (if (currAdx > 30) 5 else 0)
-        } else 0
-        sellScore += adxSellPts
+        val adxSellPts = when {
+            currAdx > w.protectAdxStrongThreshold && bearishTrend -> w.protectAdxStrongPts
+            currAdx > w.protectAdxWeakThreshold && bearishTrend -> w.protectAdxWeakPts
+            else -> 0
+        }
+        protectScore += adxSellPts
 
-        // 6. OBV declining
+        // 3. OBV declining — distribution confirmed
         val obvSellPass = obvCurrent < obv5 && obvCurrent < obv20
-        val obvSellPts = if (obvSellPass) 10 else 0
-        sellScore += obvSellPts
+        val obvProtectPts = if (obvSellPass) w.protectObvPts else 0
+        protectScore += obvProtectPts
 
-        val hasStructuralSell = smaSellPass || adxSellPts > 0
-        val sellSignal = when {
-            sellScore >= 65 && hasStructuralSell -> "STRONG SELL"
-            sellScore >= 45 -> "MODERATE SELL"
+        // 4. MACD zero-cross down — structural momentum confirmation (lower weight here)
+        val macdProtectPts = if (macdZeroCrossDn) w.protectMacdZeroCrossDnPts else 0
+        protectScore += macdProtectPts
+
+        // ═══════════════════════════════════════════════════════
+        // INTENT LABELS — derived from dual scores
+        // ═══════════════════════════════════════════════════════
+        val profitBookingActive = profitScore >= w.profitActivationThreshold && (sma200Val == null || price > sma200Val)
+        val capitalProtectActive = protectScore >= w.protectActivationThreshold && (smaSellPass || adxSellPts > 0)
+
+        val sellIntent = when {
+            profitBookingActive && capitalProtectActive -> "STRONG EXIT"
+            profitBookingActive -> "BOOK PROFIT"
+            capitalProtectActive -> "PROTECT CAPITAL"
+            else -> "HOLD"
+        }
+
+        // Legacy sellScore for backward compat (max of the two sub-scores)
+        val sellScore = maxOf(profitScore, protectScore)
+        val sellSignal = when (sellIntent) {
+            "STRONG EXIT" -> "STRONG EXIT"
+            "BOOK PROFIT" -> "BOOK PROFIT"
+            "PROTECT CAPITAL" -> "PROTECT CAPITAL"
             else -> "NO SIGNAL"
         }
 
@@ -379,13 +429,16 @@ object StockAnalyzer {
             rocPct = rocPct,
             buyScore = buyScore,
             buySignal = buySignal,
+            profitScore = profitScore,
+            protectScore = protectScore,
+            sellIntent = sellIntent,
             sellScore = sellScore,
             sellSignal = sellSignal,
             goldenBuy = goldenBuy,
             isBuy = buyScore >= 75,
             isModerateBuy = buyScore >= 60,
-            isSell = sellScore >= 65 && hasStructuralSell,
-            isModerateSell = sellScore >= 45
+            isSell = sellIntent == "STRONG EXIT" || sellIntent == "PROTECT CAPITAL",
+            isModerateSell = sellIntent == "BOOK PROFIT"
         )
     }
 

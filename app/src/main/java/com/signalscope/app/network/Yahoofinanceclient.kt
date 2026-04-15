@@ -24,11 +24,107 @@ object YahooFinanceClient {
     private const val TAG = "YahooFinanceClient"
     private const val BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 
+    // Cookie jar with proper domain matching (cookies from .yahoo.com apply to all subdomains)
+    private val cookieJar = object : CookieJar {
+        private val store = mutableListOf<Cookie>()
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            synchronized(store) {
+                cookies.forEach { newCookie ->
+                    store.removeAll { it.name == newCookie.name && it.domain == newCookie.domain }
+                    store.add(newCookie)
+                }
+            }
+        }
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            synchronized(store) {
+                return store.filter { it.matches(url) }  // OkHttp handles domain/path matching
+            }
+        }
+    }
+
+    // Custom DNS — prefer IPv4 addresses first (MIUI has flaky IPv6)
+    private val ipv4PreferredDns = object : Dns {
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            val all = Dns.SYSTEM.lookup(hostname)
+            val v4 = all.filter { it is java.net.Inet4Address }
+            val v6 = all.filter { it !is java.net.Inet4Address }
+            return v4 + v6  // v4 first, v6 as fallback
+        }
+    }
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(25, TimeUnit.SECONDS)   // hard cap — prevents hanging on partial responses
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)   // hard cap — prevents hanging on partial responses
+        .retryOnConnectionFailure(true)
+        .cookieJar(cookieJar)
+        .followRedirects(true)
+        .dns(ipv4PreferredDns)
+        // Force HTTP/1.1 — HTTP/2 connections get stuck on MIUI with no error
+        .protocols(listOf(Protocol.HTTP_1_1))
         .build()
+
+    // ── Crumb authentication for v10 API ──
+    @Volatile private var cachedCrumb: String? = null
+    @Volatile private var crumbFetchTime: Long = 0L
+    private const val CRUMB_TTL_MS = 30 * 60 * 1000L  // refresh crumb every 30 min
+
+    /**
+     * Fetch a Yahoo Finance crumb token. Required for v10 quoteSummary API.
+     * Steps: 1) Hit finance.yahoo.com to get session cookies  2) Fetch crumb with those cookies
+     */
+    private fun fetchCrumb(): String? {
+        val now = System.currentTimeMillis()
+        cachedCrumb?.let { crumb ->
+            if (now - crumbFetchTime < CRUMB_TTL_MS) return crumb
+        }
+
+        return try {
+            val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+            // Step 1: Hit fc.yahoo.com — returns 404 but sets A1/A3 cookies on .yahoo.com domain
+            // This is the same approach used by Python yfinance library
+            val seedReq = Request.Builder()
+                .url("https://fc.yahoo.com")
+                .addHeader("User-Agent", ua)
+                .build()
+            val (seedCode, seedHeaders) = client.newCall(seedReq).execute().use { seedResp ->
+                seedResp.code to seedResp.headers("Set-Cookie")
+            }
+            Log.d(TAG, "Cookie seed: HTTP $seedCode, Set-Cookie headers: ${seedHeaders.size}")
+            seedHeaders.forEach { Log.d(TAG, "  Set-Cookie: ${it.take(80)}") }
+
+            // Debug: log what cookies would be sent to query2
+            val crumbUrl = HttpUrl.Builder()
+                .scheme("https").host("query2.finance.yahoo.com")
+                .addPathSegments("v1/test/getcrumb").build()
+            val matchedCookies = cookieJar.loadForRequest(crumbUrl)
+            Log.d(TAG, "Cookies for query2: ${matchedCookies.size} — ${matchedCookies.map { "${it.name}=${it.value.take(10)}..." }}")
+
+            // Step 2: Fetch crumb using session cookies
+            val crumbReq = Request.Builder()
+                .url(crumbUrl)
+                .addHeader("User-Agent", ua)
+                .build()
+            val crumb = client.newCall(crumbReq).execute().use { crumbResp ->
+                crumbResp.body?.string()?.trim()
+            }
+
+            if (!crumb.isNullOrEmpty() && crumb.length < 50 && !crumb.contains("error")) {
+                cachedCrumb = crumb
+                crumbFetchTime = now
+                Log.d(TAG, "Yahoo crumb acquired: ${crumb.take(8)}...")
+                crumb
+            } else {
+                Log.w(TAG, "Yahoo crumb response invalid: ${crumb?.take(200)}")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch Yahoo crumb", e)
+            null
+        }
+    }
 
     sealed class CandleResult {
         data class Success(val candles: List<CandleData>) : CandleResult()
@@ -37,25 +133,68 @@ object YahooFinanceClient {
         data class Error(val message: String) : CandleResult()
     }
 
+    // ── Candle cache ──
+    // Caches 2y daily candles per yahoo symbol. On refresh, only fetches last 5 days
+    // and merges with cached history — avoids re-downloading ~500 candles every 15 min.
+    private data class CachedCandles(
+        val candles: List<CandleData>,
+        val fullFetchTime: Long  // millis when the full 2y fetch was done
+    )
+    private val candleCache = mutableMapOf<String, CachedCandles>()
+    private const val FULL_FETCH_INTERVAL_MS = 12 * 60 * 60 * 1000L  // re-fetch full 2y every 12 hours
+
+    /** Clear all cached candle data (e.g. on service restart or day boundary). */
+    fun clearCache() {
+        candleCache.clear()
+        Log.i(TAG, "Candle cache cleared")
+    }
+
     /**
-     * Fetch 2 years of daily candles for a stock.
-     * For Indian stocks (NSE): appends ".NS" suffix automatically.
-     * For US stocks (NASDAQ): uses symbol as-is.
-     *
-     * @param symbol  Trading symbol e.g. "RELIANCE" or "AAPL"
-     * @param exchange "NSE", "BSE", or "NASDAQ" — determines Yahoo suffix
+     * Cached version of fetchCandles for portfolio monitoring.
+     * First call: full 2y fetch (same as fetchCandles). Subsequent calls within 12h:
+     * fetches only last 5 days and merges with cached history — 99% less data.
+     * Falls back to full fetch on any error.
      */
-    fun fetchCandles(symbol: String, exchange: String = "NSE"): CandleResult {
+    fun fetchCandlesCached(symbol: String, exchange: String = "NSE"): CandleResult {
         val yahooSymbol = toYahooSymbol(symbol, exchange)
+        val now = System.currentTimeMillis()
+        val cached = candleCache[yahooSymbol]
 
+        // Full fetch needed if: no cache, or cache is stale (>12h)
+        if (cached == null || (now - cached.fullFetchTime) > FULL_FETCH_INTERVAL_MS) {
+            val result = fetchCandles(symbol, exchange)
+            if (result is CandleResult.Success) {
+                candleCache[yahooSymbol] = CachedCandles(result.candles, now)
+            }
+            return result
+        }
+
+        // Incremental refresh: fetch last 5 days and merge with cached history
+        val refreshResult = fetchRecentCandles(yahooSymbol)
+        if (refreshResult is CandleResult.Success && refreshResult.candles.isNotEmpty()) {
+            val recentTimestamps = refreshResult.candles.map { it.timestamp }.toSet()
+            // Keep all cached candles except the ones we're replacing with fresh data
+            val merged = cached.candles.filter { it.timestamp !in recentTimestamps } + refreshResult.candles
+            val sorted = merged.sortedBy { it.timestamp }
+            candleCache[yahooSymbol] = CachedCandles(sorted, cached.fullFetchTime)
+            return CandleResult.Success(sorted)
+        }
+
+        // Refresh failed — return cached data (still valid, just slightly stale today candle)
+        Log.w(TAG, "Incremental refresh failed for $yahooSymbol, using cached data")
+        return CandleResult.Success(cached.candles)
+    }
+
+    /**
+     * Fetch only the last 5 days of daily candles (for incremental cache refresh).
+     */
+    private fun fetchRecentCandles(yahooSymbol: String): CandleResult {
         return try {
-            Log.d(TAG, "Fetching Yahoo Finance data for $yahooSymbol")
-
             val url = HttpUrl.Builder()
                 .scheme("https")
                 .host("query1.finance.yahoo.com")
                 .addPathSegments("v8/finance/chart/$yahooSymbol")
-                .addQueryParameter("range", "2y")
+                .addQueryParameter("range", "5d")
                 .addQueryParameter("interval", "1d")
                 .addQueryParameter("includePrePost", "false")
                 .addQueryParameter("events", "")
@@ -71,37 +210,111 @@ object YahooFinanceClient {
                 .build()
 
             val response = client.newCall(request).execute()
-
             response.use { resp ->
                 when (resp.code) {
-                    429 -> {
-                        Log.w(TAG, "Yahoo Finance rate limited for $yahooSymbol")
-                        return CandleResult.RateLimited
+                    429 -> CandleResult.RateLimited
+                    200 -> {
+                        val body = resp.body?.string() ?: return CandleResult.NoData
+                        parseYahooResponse(body, yahooSymbol)
                     }
-                    404 -> {
-                        Log.w(TAG, "Symbol not found: $yahooSymbol")
-                        return tryAlternateSuffix(symbol, exchange)
-                    }
-                    200 -> { /* continue */ }
-                    else -> {
-                        Log.w(TAG, "Yahoo Finance HTTP ${resp.code} for $yahooSymbol")
-                        return CandleResult.NoData
+                    else -> CandleResult.NoData
+                }
+            }
+        } catch (e: Exception) {
+            CandleResult.Error(e.message ?: "Unknown error")
+        }
+    }
+
+    /**
+     * Fetch 2 years of daily candles for a stock.
+     * For Indian stocks (NSE): appends ".NS" suffix automatically.
+     * For US stocks (NASDAQ): uses symbol as-is.
+     *
+     * @param symbol  Trading symbol e.g. "RELIANCE" or "AAPL"
+     * @param exchange "NSE", "BSE", or "NASDAQ" — determines Yahoo suffix
+     */
+    fun fetchCandles(symbol: String, exchange: String = "NSE"): CandleResult {
+        val yahooSymbol = toYahooSymbol(symbol, exchange)
+        val maxAttempts = 3
+
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                if (attempt > 1) {
+                    Log.d(TAG, "Retry #$attempt for $yahooSymbol")
+                    Thread.sleep((500L * attempt).coerceAtMost(2000L))
+                } else {
+                    Log.d(TAG, "Fetching Yahoo Finance data for $yahooSymbol")
+                }
+
+                val url = HttpUrl.Builder()
+                    .scheme("https")
+                    .host("query1.finance.yahoo.com")
+                    .addPathSegments("v8/finance/chart/$yahooSymbol")
+                    .addQueryParameter("range", "2y")
+                    .addQueryParameter("interval", "1d")
+                    .addQueryParameter("includePrePost", "false")
+                    .addQueryParameter("events", "")
+                    .build()
+
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0"
+                    )
+                    .addHeader("Accept", "application/json")
+                    .build()
+
+                val response = client.newCall(request).execute()
+
+                return response.use { resp ->
+                    when (resp.code) {
+                        429 -> {
+                            Log.w(TAG, "Yahoo Finance rate limited for $yahooSymbol")
+                            CandleResult.RateLimited
+                        }
+                        404 -> {
+                            Log.w(TAG, "Symbol not found: $yahooSymbol")
+                            tryAlternateSuffix(symbol, exchange)
+                        }
+                        200 -> {
+                            val body = resp.body?.string() ?: return@use CandleResult.NoData
+                            parseYahooResponse(body, yahooSymbol)
+                        }
+                        else -> {
+                            Log.w(TAG, "Yahoo Finance HTTP ${resp.code} for $yahooSymbol")
+                            CandleResult.NoData
+                        }
                     }
                 }
 
-                val body = resp.body?.string() ?: return CandleResult.NoData
-                parseYahooResponse(body, yahooSymbol)
-            }
-
-        } catch (e: Exception) {
-            val msg = e.message?.lowercase() ?: ""
-            if ("rate" in msg || "429" in msg || "too many" in msg) {
-                CandleResult.RateLimited
-            } else {
+            } catch (e: java.io.InterruptedIOException) {
+                // Timeout — retry
+                lastError = e
+                Log.w(TAG, "Timeout on attempt $attempt for $yahooSymbol")
+                continue
+            } catch (e: java.net.SocketTimeoutException) {
+                lastError = e
+                Log.w(TAG, "SocketTimeout on attempt $attempt for $yahooSymbol")
+                continue
+            } catch (e: java.net.UnknownHostException) {
+                // DNS failure — retry, phone might have flaky network
+                lastError = e
+                Log.w(TAG, "DNS failure on attempt $attempt for $yahooSymbol")
+                continue
+            } catch (e: Exception) {
+                val msg = e.message?.lowercase() ?: ""
+                if ("rate" in msg || "429" in msg || "too many" in msg) {
+                    return CandleResult.RateLimited
+                }
                 Log.e(TAG, "Yahoo Finance error for $yahooSymbol", e)
-                CandleResult.Error(e.message ?: "Unknown error")
+                return CandleResult.Error(e.message ?: "Unknown error")
             }
         }
+
+        Log.e(TAG, "All $maxAttempts attempts failed for $yahooSymbol", lastError)
+        return CandleResult.Error(lastError?.message ?: "Timeout after $maxAttempts retries")
     }
 
     private fun tryAlternateSuffix(symbol: String, exchange: String): CandleResult {
@@ -129,11 +342,11 @@ object YahooFinanceClient {
                 )
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (response.code != 200) return CandleResult.NoData
-
-            val body = response.body?.string() ?: return CandleResult.NoData
-            parseYahooResponse(body, altSymbol)
+            client.newCall(request).execute().use { response ->
+                if (response.code != 200) return CandleResult.NoData
+                val body = response.body?.string() ?: return CandleResult.NoData
+                parseYahooResponse(body, altSymbol)
+            }
 
         } catch (e: Exception) {
             CandleResult.Error(e.message ?: "Unknown error")
@@ -195,6 +408,163 @@ object YahooFinanceClient {
         } catch (e: Exception) {
             Log.e(TAG, "Yahoo Finance parse error for $symbol", e)
             CandleResult.Error("Parse error: ${e.message}")
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // FUNDAMENTAL DATA (for Value Analysis)
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Fundamental data fetched from Yahoo Finance quoteSummary API.
+     * All fields nullable — Yahoo may not have data for every stock.
+     */
+    data class FundamentalData(
+        val trailingPe: Double? = null,
+        val forwardPe: Double? = null,
+        val priceToBook: Double? = null,
+        val enterpriseToEbitda: Double? = null,
+        val debtToEquity: Double? = null,
+        val returnOnEquity: Double? = null,    // ROE as decimal (0.15 = 15%)
+        val returnOnAssets: Double? = null,
+        val dividendYield: Double? = null,      // as decimal (0.03 = 3%)
+        val operatingCashflow: Double? = null,
+        val totalRevenue: Double? = null,
+        val netIncome: Double? = null,          // from incomeStatementHistory
+        val fiftyTwoWeekLow: Double? = null,
+        val fiftyTwoWeekHigh: Double? = null,
+        val sharesOutstanding: Long? = null,
+        val sector: String? = null,
+        val industry: String? = null
+    )
+
+    sealed class FundamentalResult {
+        data class Success(val data: FundamentalData) : FundamentalResult()
+        object RateLimited : FundamentalResult()
+        object NoData : FundamentalResult()
+        data class Error(val message: String) : FundamentalResult()
+    }
+
+    /**
+     * Fetch fundamental data from Yahoo Finance quoteSummary API.
+     * Modules: defaultKeyStatistics, financialData, summaryDetail, assetProfile
+     */
+    fun fetchFundamentals(symbol: String, exchange: String = "NSE"): FundamentalResult {
+        val yahooSymbol = toYahooSymbol(symbol, exchange)
+        return try {
+            // Acquire crumb (needed for v10 quoteSummary auth)
+            val crumb = fetchCrumb()
+            if (crumb == null) {
+                Log.w(TAG, "No crumb available — cannot fetch fundamentals for $yahooSymbol")
+                return FundamentalResult.NoData
+            }
+
+            val url = HttpUrl.Builder()
+                .scheme("https")
+                .host("query2.finance.yahoo.com")
+                .addPathSegments("v10/finance/quoteSummary/$yahooSymbol")
+                .addQueryParameter("modules", "defaultKeyStatistics,financialData,summaryDetail,assetProfile")
+                .addQueryParameter("crumb", crumb)
+                .build()
+
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0")
+                .addHeader("Accept", "application/json")
+                .build()
+
+            Log.d(TAG, "quoteSummary URL: $url")
+            val response = client.newCall(request).execute()
+            response.use { resp ->
+                Log.d(TAG, "quoteSummary HTTP ${resp.code} for $yahooSymbol")
+                when (resp.code) {
+                    429 -> FundamentalResult.RateLimited
+                    401, 403 -> {
+                        Log.w(TAG, "quoteSummary auth failed (${resp.code}) for $yahooSymbol — clearing crumb")
+                        cachedCrumb = null  // force re-fetch next time
+                        FundamentalResult.NoData
+                    }
+                    404 -> {
+                        Log.w(TAG, "quoteSummary 404 for $yahooSymbol — symbol not found")
+                        FundamentalResult.NoData
+                    }
+                    200 -> {
+                        val body = resp.body?.string()
+                        if (body == null) {
+                            Log.w(TAG, "quoteSummary empty body for $yahooSymbol")
+                            return FundamentalResult.NoData
+                        }
+                        Log.d(TAG, "quoteSummary body preview for $yahooSymbol: ${body.take(200)}")
+                        parseFundamentals(body, yahooSymbol)
+                    }
+                    else -> {
+                        val errBody = resp.body?.string()?.take(300) ?: ""
+                        Log.w(TAG, "quoteSummary HTTP ${resp.code} for $yahooSymbol: $errBody")
+                        FundamentalResult.NoData
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            val msg = e.message?.lowercase() ?: ""
+            if ("rate" in msg || "429" in msg) FundamentalResult.RateLimited
+            else {
+                Log.e(TAG, "quoteSummary error for $yahooSymbol", e)
+                FundamentalResult.Error(e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    private fun parseFundamentals(body: String, symbol: String): FundamentalResult {
+        return try {
+            val json = JSONObject(body)
+            val summary = json.optJSONObject("quoteSummary") ?: return FundamentalResult.NoData
+            val results = summary.optJSONArray("result")
+            if (results == null || results.length() == 0) return FundamentalResult.NoData
+
+            val r = results.getJSONObject(0)
+            val keyStats = r.optJSONObject("defaultKeyStatistics")
+            val finData = r.optJSONObject("financialData")
+            val summaryDetail = r.optJSONObject("summaryDetail")
+            val profile = r.optJSONObject("assetProfile")
+
+            fun JSONObject?.rawVal(key: String): Double? {
+                val obj = this?.optJSONObject(key) ?: return null
+                val v = obj.optDouble("raw", Double.NaN)
+                return if (v.isNaN()) null else v
+            }
+
+            fun JSONObject?.rawLong(key: String): Long? {
+                val obj = this?.optJSONObject(key) ?: return null
+                val v = obj.optLong("raw", -1)
+                return if (v == -1L) null else v
+            }
+
+            val data = FundamentalData(
+                trailingPe = summaryDetail.rawVal("trailingPE") ?: keyStats.rawVal("trailingPE"),
+                forwardPe = summaryDetail.rawVal("forwardPE") ?: keyStats.rawVal("forwardPE"),
+                priceToBook = keyStats.rawVal("priceToBook"),
+                enterpriseToEbitda = keyStats.rawVal("enterpriseToEbitda"),
+                debtToEquity = finData.rawVal("debtToEquity")?.let { it / 100.0 }, // Yahoo returns as %, normalize
+                returnOnEquity = finData.rawVal("returnOnEquity"),
+                returnOnAssets = finData.rawVal("returnOnAssets"),
+                dividendYield = summaryDetail.rawVal("dividendYield")?.let { it * 100.0 }, // convert decimal → %
+                operatingCashflow = finData.rawVal("operatingCashflow"),
+                totalRevenue = finData.rawVal("totalRevenue"),
+                netIncome = finData.rawVal("netIncome") ?: keyStats.rawVal("netIncomeToCommon"),
+                fiftyTwoWeekLow = summaryDetail.rawVal("fiftyTwoWeekLow"),
+                fiftyTwoWeekHigh = summaryDetail.rawVal("fiftyTwoWeekHigh"),
+                sharesOutstanding = keyStats.rawLong("sharesOutstanding"),
+                sector = profile?.optString("sector", null),
+                industry = profile?.optString("industry", null)
+            )
+
+            Log.d(TAG, "Fundamentals: $symbol — PE=${data.trailingPe} PB=${data.priceToBook} D/E=${data.debtToEquity}")
+            FundamentalResult.Success(data)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "quoteSummary parse error for $symbol", e)
+            FundamentalResult.Error("Parse error: ${e.message}")
         }
     }
 
