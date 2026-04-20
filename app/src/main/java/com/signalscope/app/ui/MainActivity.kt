@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.webkit.*
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -64,7 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var lastSeenDiscoveryVersion = 0L
     private var lastSeenPortfolioVersion = 0L
     private var wasDiscoveryRunning = false
-    private val POLL_INTERVAL_MS = 2000L // 2 seconds
+    private val POLL_INTERVAL_MS = 500L // 500ms — keeps UI in sync with notification progress
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -209,21 +210,26 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER_VERTICAL
         }
-        val logo = TextView(this).apply {
-            text = "S"
-            textSize = 13f
-            setTextColor(0xFFFFFFFF.toInt())
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            gravity = android.view.Gravity.CENTER
-            setBackgroundColor(0xFF059669.toInt())
-            val size = dp(26)
+        // Logo ImageView — loads assets/logo.png (same image used inside the WebView).
+        // Falls back to the launcher icon if the asset is missing.
+        val logo = ImageView(this).apply {
+            try {
+                assets.open("logo.png").use {
+                    setImageBitmap(android.graphics.BitmapFactory.decodeStream(it))
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "logo.png not found in assets, falling back to launcher icon", e)
+                setImageResource(com.signalscope.app.R.mipmap.ic_launcher)
+            }
+            val size = dp(30)
             layoutParams = LinearLayout.LayoutParams(size, size).apply { marginEnd = dp(8) }
-            setPadding(0, 0, 0, 0)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "SignalScope"
         }
         statusRow.addView(logo)
 
         txtStatus = TextView(this).apply {
-            text = "SignalScope"
+            text = "Ready"
             textSize = 14f
             setTextColor(0xFF0f172a.toInt())
             setTypeface(null, android.graphics.Typeface.BOLD)
@@ -318,7 +324,9 @@ class MainActivity : AppCompatActivity() {
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            allowFileAccess = true
+            allowFileAccess = true // needed for file:///android_asset/dashboard.html
+            allowFileAccessFromFileURLs = false // block JS from reading other local files
+            allowUniversalAccessFromFileURLs = false // block cross-origin file access
             loadWithOverviewMode = true
             useWideViewPort = true
             setSupportZoom(false)
@@ -581,8 +589,11 @@ class MainActivity : AppCompatActivity() {
                 "skipped" to result.skipped,
                 "lastError" to result.lastError,
                 "isScanning" to !result.isComplete,
+                // Use discoveryProgress (stocks attempted = idx+1) so the app screen matches
+                // the notification, which also counts attempts. totalScanned only counts
+                // successfully analysed stocks, so it's always lower when rate-limits occur.
                 "progress" to if (!result.isComplete) mapOf(
-                    "current" to result.totalScanned,
+                    "current" to ScanServiceResultHolder.discoveryProgress,
                     "total" to result.totalSymbols
                 ) else null
             )
@@ -627,6 +638,9 @@ class MainActivity : AppCompatActivity() {
                 "sellSignal" to (a?.sellSignal ?: "—"),
                 "support" to (a?.support ?: 0.0),
                 "resistance" to (a?.resistance ?: 0.0),
+                "projectedCeiling" to (a?.projectedCeiling),
+                "projectedFloor" to (a?.projectedFloor),
+                "projectedMidpoint" to (a?.projectedMidpoint),
                 "hasAnalysis" to (a != null)
             ))
         }
@@ -769,17 +783,18 @@ class MainActivity : AppCompatActivity() {
             val lastScan = config.lastPortfolioScan
             val timeStr = if (lastScan > 0)
                 SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(lastScan)) else "—"
-            txtStatus.text = "SignalScope · Monitoring · Last: $timeStr"
+            // Logo ImageView sits immediately to the left, so no brand prefix needed.
+            txtStatus.text = "Monitoring · Last: $timeStr"
             txtStatus.setTextColor(0xFF059669.toInt())
         } else {
             // Show cached discovery info if available
             val cached = holder.lastDiscoveryResult
             if (cached != null && cached.isComplete) {
                 val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(cached.timestamp))
-                txtStatus.text = "SignalScope · ${cached.market}: ${cached.allStocks.size} stocks · $timeStr"
+                txtStatus.text = "${cached.market}: ${cached.allStocks.size} stocks · $timeStr"
                 txtStatus.setTextColor(0xFF64748b.toInt()) // grey — stale data indicator
             } else {
-                txtStatus.text = "SignalScope"
+                txtStatus.text = "Ready"
                 txtStatus.setTextColor(0xFF0f172a.toInt())
             }
         }

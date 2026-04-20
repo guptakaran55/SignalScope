@@ -32,24 +32,13 @@
                     android:orientation="horizontal"
                     android:gravity="center_vertical">
 
-                    <TextView
-                        android:layout_width="28dp"
-                        android:layout_height="28dp"
-                        android:gravity="center"
-                        android:text="S"
-                        android:textColor="#ffffff"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:background="@drawable/logo_bg" />
-
-                    <TextView
+                    <ImageView
+                        android:id="@+id/appLogo"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:text="SignalScope"
-                        android:textColor="#ffffff"
-                        android:textSize="18sp"
-                        android:textStyle="bold" />
+                        android:layout_height="32dp"
+                        android:adjustViewBounds="true"
+                        android:src="@mipmap/ic_launcher"
+                        android:contentDescription="SignalScope" />
                 </LinearLayout>
 
                 <ImageButton

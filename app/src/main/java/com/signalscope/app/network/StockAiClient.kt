@@ -232,16 +232,20 @@ object StockAiClient {
 
         val system = """You are a stock market analyst. Analyze why a stock has pulled back significantly.
 Be concise (3-4 sentences max). Focus on the most probable cause from the news.
+Form your own independent opinion — do not assume any prior bullish or bearish bias.
 End with a one-word classification: TEMPORARY, STRUCTURAL, or UNCERTAIN."""
 
         val user = buildString {
             append("Stock: $symbol (NSE India)\n")
             append("Current price: ₹${String.format("%.2f", price)}\n")
-            append("Distance from EMA(21): ${String.format("%.1f", ema21PctDiff)}% (deep pullback)\n")
-            append("MACD phase: $macdPhase | Profit Booking: $profitScore/58 | Capital Protection: $protectScore/58\n\n")
+            append("Distance from EMA(21): ${String.format("%.1f", ema21PctDiff)}% (deep pullback)\n\n")
+            // NOTE: profitScore / protectScore / macdPhase are deliberately NOT passed to the LLM
+            // to avoid biasing the outlook with our own synthetic scores. The function signature
+            // keeps them for backward compat with MainActivity's JS bridge wiring.
             append("Recent news headlines:\n")
             headlines.forEachIndexed { i, h -> append("${i + 1}. $h\n") }
-            append("\nWhat is the most probable reason for this pullback? Is it temporary (buy the dip) or structural (avoid)?")
+            append("\nBased ONLY on the news above and publicly known facts about this company, ")
+            append("what is the most probable reason for this pullback? Is it temporary (buy the dip) or structural (avoid)?")
         }
 
         return callLlm(config, system, user)
@@ -271,8 +275,11 @@ End with a one-word classification: TEMPORARY, STRUCTURAL, or UNCERTAIN."""
         val headlines = fetchNewsHeadlines(symbol, 10)
 
         val system = """You are a stock market analyst providing outlook summaries for Indian NSE stocks.
+Form your own independent opinion based on the news and publicly known fundamentals below.
+Do NOT assume any prior bullish or bearish bias — you are given only neutral market data and headlines.
+
 Give a structured response with:
-1. SHORT TERM (1-4 weeks): Brief outlook based on technical indicators and recent news
+1. SHORT TERM (1-4 weeks): Brief outlook based on standard technical indicators and recent news
 2. LONG TERM (3-12 months): Outlook based on fundamentals from news and trend indicators
 3. KEY RISKS: 1-2 bullet points
 4. VERDICT: One of: STRONG BUY / BUY / HOLD / REDUCE / SELL
@@ -282,24 +289,27 @@ Keep each section to 2-3 sentences max. Be specific about price levels when poss
         val user = buildString {
             append("Stock: $symbol (NSE India)\n")
             append("Price: ₹${String.format("%.2f", price)}\n\n")
-            append("── Technical Indicators ──\n")
-            append("Buy score: $buyScore/120\n")
-            append("Profit Booking score: $profitScore/58 | Capital Protection score: $protectScore/58\n")
-            append("Sell Intent: $sellIntent\n")
-            append("MACD: $macdPhase (slope: ${String.format("%.3f", macdSlope)})\n")
+            append("── Standard Market Indicators ──\n")
+            // Neutral, publicly-computable indicators only. No app-generated verdicts.
             if (rsi != null) append("RSI(14): ${String.format("%.1f", rsi)}\n")
             if (sma200 != null) append("SMA(200): ₹${String.format("%.2f", sma200)} — price is ${if (price > sma200) "above" else "below"}\n")
             append("EMA(21) distance: ${String.format("%.1f", ema21PctDiff)}%\n")
-            append("R:R ratio: ${String.format("%.1f", rrRatio)}:1\n")
+            append("MACD slope: ${String.format("%.3f", macdSlope)}\n")
             append("Daily velocity: ${String.format("%.2f", priceVel)}%\n\n")
             if (headlines.isNotEmpty()) {
                 append("── Recent News ──\n")
                 headlines.forEachIndexed { i, h -> append("${i + 1}. $h\n") }
             } else {
-                append("(No recent news available)\n")
+                append("(No recent news available — rely on general market knowledge of this company)\n")
             }
-            append("\nProvide short-term and long-term outlook with verdict.")
+            append("\nBased ONLY on the data above and publicly known fundamentals, ")
+            append("provide short-term and long-term outlook with verdict. ")
+            append("Do not assume any prior app-generated scoring or recommendation.")
         }
+        // NOTE: buyScore / profitScore / protectScore / sellIntent / rrRatio / macdPhase parameters
+        // are deliberately NOT used in the prompt — they are app-generated synthetic verdicts that
+        // would bias the LLM. The function signature keeps them for backward compat with the JS
+        // bridge in MainActivity (Kotlin does not warn on unused function parameters).
 
         return callLlm(config, system, user)
     }

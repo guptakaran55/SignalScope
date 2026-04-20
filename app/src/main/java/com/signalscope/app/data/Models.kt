@@ -132,6 +132,13 @@ data class StockAnalysis(
     val sectorMedianPe: Double? = null,   // populated per-scan from sector grouping
     val hasBuyback: Boolean = false,
 
+    // ── Tier 2: Wave projection (opt-in, shown via detail-modal button) ──
+    // Projected oscillation range 20 days forward based on EMA50 trend + 2σ envelope.
+    // NOT a price forecast — a probabilistic channel.
+    val projectedCeiling: Double? = null,
+    val projectedFloor: Double? = null,
+    val projectedMidpoint: Double? = null,
+
     val valueScore: Int = 0,              // 0–100 fundamental value score
     val valueRating: String = "N/A"       // "DEEP VALUE" / "MODERATE VALUE" / "MILD VALUE" / "NOT ATTRACTIVE" / "N/A"
 )

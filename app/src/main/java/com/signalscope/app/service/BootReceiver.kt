@@ -19,6 +19,10 @@ class BootReceiver : BroadcastReceiver() {
                 Log.i("BootReceiver", "Restarting ScanService after boot")
                 val serviceIntent = ScanService.createIntent(context, ScanService.ACTION_START)
                 context.startForegroundService(serviceIntent)
+            } else {
+                // Even if portfolio monitoring isn't active, re-arm the auto-discovery
+                // alarm chain so scheduled scans survive reboots independently.
+                DiscoveryAutoScheduler.ensureScheduled(context)
             }
         }
     }

@@ -1491,6 +1491,7 @@ int color foreground_material_dark 0x7f05005b
 int color foreground_material_light 0x7f05005c
 int color highlighted_text_material_dark 0x7f05005d
 int color highlighted_text_material_light 0x7f05005e
+int color ic_launcher_background 0x7f050303
 int color m3_appbar_overlay_color 0x7f05005f
 int color m3_assist_chip_icon_tint_color 0x7f050060
 int color m3_assist_chip_stroke_color 0x7f050061
@@ -3257,6 +3258,7 @@ int id animateToEnd 0x7f080054
 int id animateToStart 0x7f080055
 int id antiClockwise 0x7f080056
 int id anticipate 0x7f080057
+int id appLogo 0x7f08022c
 int id arc 0x7f080058
 int id asConfigured 0x7f080059
 int id async 0x7f08005a

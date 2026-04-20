@@ -5,6 +5,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -29,6 +30,9 @@ public final class ActivityMainBinding implements ViewBinding {
 
   @NonNull
   public final RecyclerView alertsList;
+
+  @NonNull
+  public final ImageView appLogo;
 
   @NonNull
   public final MaterialButton btnDiscoveryNasdaq;
@@ -115,21 +119,23 @@ public final class ActivityMainBinding implements ViewBinding {
   public final TextView txtStatus;
 
   private ActivityMainBinding(@NonNull CoordinatorLayout rootView, @NonNull RecyclerView alertsList,
-      @NonNull MaterialButton btnDiscoveryNasdaq, @NonNull MaterialButton btnDiscoveryNifty,
-      @NonNull MaterialButton btnDiscoveryStop, @NonNull MaterialButton btnScanToggle,
-      @NonNull ImageButton btnSettings, @NonNull CardView cardStatus,
-      @NonNull TextView discoveryInfo, @NonNull RecyclerView discoveryList,
-      @NonNull LinearLayout discoveryProgress, @NonNull ProgressBar discoveryProgressBar,
-      @NonNull TextView discoveryProgressText, @NonNull LinearLayout discoverySection,
-      @NonNull RecyclerView holdingsList, @NonNull LinearLayout portfolioSection,
-      @NonNull StatCardBinding statAlerts, @NonNull StatCardBinding statBuyScore,
-      @NonNull StatCardBinding statHoldings, @NonNull StatCardBinding statSellScore,
-      @NonNull View statusDot, @NonNull SwipeRefreshLayout swipeRefresh,
-      @NonNull TextView tabDiscovery, @NonNull TextView tabPortfolio, @NonNull Toolbar toolbar,
-      @NonNull TextView txtLastScan, @NonNull TextView txtNoAlerts, @NonNull TextView txtNoHoldings,
-      @NonNull TextView txtScanInfo, @NonNull TextView txtStatus) {
+      @NonNull ImageView appLogo, @NonNull MaterialButton btnDiscoveryNasdaq,
+      @NonNull MaterialButton btnDiscoveryNifty, @NonNull MaterialButton btnDiscoveryStop,
+      @NonNull MaterialButton btnScanToggle, @NonNull ImageButton btnSettings,
+      @NonNull CardView cardStatus, @NonNull TextView discoveryInfo,
+      @NonNull RecyclerView discoveryList, @NonNull LinearLayout discoveryProgress,
+      @NonNull ProgressBar discoveryProgressBar, @NonNull TextView discoveryProgressText,
+      @NonNull LinearLayout discoverySection, @NonNull RecyclerView holdingsList,
+      @NonNull LinearLayout portfolioSection, @NonNull StatCardBinding statAlerts,
+      @NonNull StatCardBinding statBuyScore, @NonNull StatCardBinding statHoldings,
+      @NonNull StatCardBinding statSellScore, @NonNull View statusDot,
+      @NonNull SwipeRefreshLayout swipeRefresh, @NonNull TextView tabDiscovery,
+      @NonNull TextView tabPortfolio, @NonNull Toolbar toolbar, @NonNull TextView txtLastScan,
+      @NonNull TextView txtNoAlerts, @NonNull TextView txtNoHoldings, @NonNull TextView txtScanInfo,
+      @NonNull TextView txtStatus) {
     this.rootView = rootView;
     this.alertsList = alertsList;
+    this.appLogo = appLogo;
     this.btnDiscoveryNasdaq = btnDiscoveryNasdaq;
     this.btnDiscoveryNifty = btnDiscoveryNifty;
     this.btnDiscoveryStop = btnDiscoveryStop;
@@ -190,6 +196,12 @@ public final class ActivityMainBinding implements ViewBinding {
       id = R.id.alertsList;
       RecyclerView alertsList = ViewBindings.findChildViewById(rootView, id);
       if (alertsList == null) {
+        break missingId;
+      }
+
+      id = R.id.appLogo;
+      ImageView appLogo = ViewBindings.findChildViewById(rootView, id);
+      if (appLogo == null) {
         break missingId;
       }
 
@@ -365,9 +377,9 @@ public final class ActivityMainBinding implements ViewBinding {
         break missingId;
       }
 
-      return new ActivityMainBinding((CoordinatorLayout) rootView, alertsList, btnDiscoveryNasdaq,
-          btnDiscoveryNifty, btnDiscoveryStop, btnScanToggle, btnSettings, cardStatus,
-          discoveryInfo, discoveryList, discoveryProgress, discoveryProgressBar,
+      return new ActivityMainBinding((CoordinatorLayout) rootView, alertsList, appLogo,
+          btnDiscoveryNasdaq, btnDiscoveryNifty, btnDiscoveryStop, btnScanToggle, btnSettings,
+          cardStatus, discoveryInfo, discoveryList, discoveryProgress, discoveryProgressBar,
           discoveryProgressText, discoverySection, holdingsList, portfolioSection,
           binding_statAlerts, binding_statBuyScore, binding_statHoldings, binding_statSellScore,
           statusDot, swipeRefresh, tabDiscovery, tabPortfolio, toolbar, txtLastScan, txtNoAlerts,

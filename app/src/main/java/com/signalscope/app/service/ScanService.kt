@@ -4,8 +4,11 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
+import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
+import android.app.AlarmManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.signalscope.app.data.*
@@ -16,6 +19,8 @@ import com.signalscope.app.ui.MainActivity
 import com.signalscope.app.util.StockAnalyzer
 import com.signalscope.app.util.ValueAnalyzer
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -48,9 +53,13 @@ class ScanService : Service() {
         const val ACTION_SCAN_NOW = "com.signalscope.SCAN_NOW"
 
         // Discovery scan actions (anytime, on-demand)
-        const val ACTION_DISCOVERY_NIFTY500  = "com.signalscope.DISCOVERY_NIFTY500"
-        const val ACTION_DISCOVERY_NASDAQ100 = "com.signalscope.DISCOVERY_NASDAQ100"
-        const val ACTION_DISCOVERY_STOP      = "com.signalscope.DISCOVERY_STOP"
+        // Manual variants run in FAST mode (user is watching, wants results sooner).
+        // _AUTO variants run in ROBUST mode (background, must not fail midway).
+        const val ACTION_DISCOVERY_NIFTY500       = "com.signalscope.DISCOVERY_NIFTY500"
+        const val ACTION_DISCOVERY_NASDAQ100      = "com.signalscope.DISCOVERY_NASDAQ100"
+        const val ACTION_DISCOVERY_NIFTY500_AUTO  = "com.signalscope.DISCOVERY_NIFTY500_AUTO"
+        const val ACTION_DISCOVERY_NASDAQ100_AUTO = "com.signalscope.DISCOVERY_NASDAQ100_AUTO"
+        const val ACTION_DISCOVERY_STOP           = "com.signalscope.DISCOVERY_STOP"
 
         // Broadcast events
         const val BROADCAST_SCAN_UPDATE      = "com.signalscope.SCAN_UPDATE"
@@ -72,7 +81,17 @@ class ScanService : Service() {
     private var portfolioJob: Job? = null
     private var discoveryJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // ── Single Yahoo session lock ──
+    // Portfolio + discovery share one OkHttp client, cookie jar, and crumb cache.
+    // Running both at once doubles the request rate against Yahoo and frequently
+    // corrupts the crumb session mid-scan, which is the #1 cause of random
+    // mid-scan stalls (e.g. discovery dying at stock 70/120/200 when the user
+    // taps "scan portfolio"). This mutex serialises them: whichever scan starts
+    // first runs to completion before the other gets the Yahoo channel.
+    private val yahooScanLock = Mutex()
 
     // Tiered scan frequency: full analysis every FULL_SCAN_INTERVAL scans,
     // quick scans (cached data) in between. Since daily indicators barely move
@@ -131,14 +150,19 @@ class ScanService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START              -> startPortfolioMonitoring()
-            ACTION_STOP               -> stopAll()
-            ACTION_SCAN_NOW           -> triggerImmediatePortfolioScan()
-            ACTION_DISCOVERY_NIFTY500 -> startDiscoveryScan("nifty500")
-            ACTION_DISCOVERY_NASDAQ100-> startDiscoveryScan("nasdaq100")
-            ACTION_DISCOVERY_STOP     -> stopDiscoveryScan()
-            else                      -> startPortfolioMonitoring()
+            ACTION_START                   -> startPortfolioMonitoring()
+            ACTION_STOP                    -> stopAll()
+            ACTION_SCAN_NOW                -> triggerImmediatePortfolioScan()
+            ACTION_DISCOVERY_NIFTY500      -> startDiscoveryScan("nifty500", robust = false)
+            ACTION_DISCOVERY_NASDAQ100     -> startDiscoveryScan("nasdaq100", robust = false)
+            ACTION_DISCOVERY_NIFTY500_AUTO -> startDiscoveryScan("nifty500", robust = true)
+            ACTION_DISCOVERY_NASDAQ100_AUTO-> startDiscoveryScan("nasdaq100", robust = true)
+            ACTION_DISCOVERY_STOP          -> stopDiscoveryScan()
+            else                           -> startPortfolioMonitoring()
         }
+        // After every command, make sure the auto-discovery alarm chain is armed.
+        // No-op if already scheduled.
+        DiscoveryAutoScheduler.ensureScheduled(this)
         return START_STICKY
     }
 
@@ -159,10 +183,7 @@ class ScanService : Service() {
         config.serviceRunning = true
         YahooFinanceClient.clearCache() // fresh start — first scan will do full 2y fetch
 
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SignalScope::ScanWakeLock").apply {
-            acquire(24 * 60 * 60 * 1000L)
-        }
+        acquireScanLocks(durationMs = 24 * 60 * 60 * 1000L)
 
         startForeground(NOTIFICATION_SCAN_ID, buildScanNotification("Starting..."))
 
@@ -198,11 +219,50 @@ class ScanService : Service() {
         portfolioJob?.cancel()
         discoveryAbort = true
         discoveryJob?.cancel()
-        wakeLock?.let { if (it.isHeld) it.release() }
+        releaseScanLocks()
         config.serviceRunning = false
         isDiscoveryRunning = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * Acquire BOTH a partial wake lock (CPU stays on) AND a high-perf WiFi lock
+     * (radio stays awake).
+     *
+     * Wake lock alone isn't enough: when the screen turns off Android puts the
+     * WiFi radio into a power-saving doze where outbound TCP sessions stall for
+     * tens of seconds at a time. That's the proximate cause of "scan stops at
+     * 70/120/200 when the screen is off" — the OkHttp socket times out, Yahoo
+     * thinks we hung up, and the next request comes back rate-limited.
+     *
+     * WIFI_MODE_FULL_HIGH_PERF tells the OS "I'm doing real network work, don't
+     * tickle the radio." It costs battery but only while held — we release as
+     * soon as scans stop.
+     */
+    @Suppress("DEPRECATION") // WIFI_MODE_FULL_HIGH_PERF is still the right mode for our use case
+    private fun acquireScanLocks(durationMs: Long) {
+        if (wakeLock?.isHeld != true) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SignalScope::ScanWakeLock").apply {
+                setReferenceCounted(false)
+                acquire(durationMs)
+            }
+        }
+        if (wifiLock?.isHeld != true) {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "SignalScope::ScanWifiLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+    }
+
+    private fun releaseScanLocks() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        wifiLock = null
     }
 
     private fun triggerImmediatePortfolioScan() {
@@ -223,21 +283,34 @@ class ScanService : Service() {
     // Shows full indicator data — no market hours gate
     // ═══════════════════════════════════════════════════════
 
-    private fun startDiscoveryScan(market: String) {
+    /**
+     * Start a discovery scan.
+     *
+     * @param robust  ROBUST mode = slow but durable (used for automatic 2-hour
+     *                background scans where the user isn't watching). Doubles the
+     *                pacing and roughly doubles the error tolerance so transient
+     *                Yahoo rate-limits never abort the run.
+     *                FAST mode = current pacing (used for manual user-triggered
+     *                scans where they want results sooner). Still has the
+     *                250ms candle/fundamentals gap and retry phase.
+     */
+    private fun startDiscoveryScan(market: String, robust: Boolean) {
         if (isDiscoveryRunning) {
             Log.w(TAG, "Discovery scan already running — ignoring")
             return
         }
 
-        // Ensure service is in foreground (might be called when service isn't monitoring)
+        // Always make sure we're a proper foreground service holding wake+wifi
+        // locks before kicking off a multi-minute scan. Even when portfolio
+        // monitoring already started us, re-acquiring is a no-op (locks are
+        // setReferenceCounted(false)) and ensures the wifi lock is held for
+        // discovery even if startPortfolioMonitoring wasn't called.
         if (!config.serviceRunning) {
             config.serviceRunning = true
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SignalScope::ScanWakeLock").apply {
-                acquire(2 * 60 * 60 * 1000L) // 2 hours for a full scan
-            }
             startForeground(NOTIFICATION_SCAN_ID, buildScanNotification("Starting discovery scan..."))
         }
+        // ROBUST mode can take 30+ min; give the wake lock plenty of headroom.
+        acquireScanLocks(durationMs = (if (robust) 4 else 2) * 60 * 60 * 1000L)
 
         isDiscoveryRunning = true
         discoveryAbort = false
@@ -246,24 +319,31 @@ class ScanService : Service() {
 
         discoveryJob?.cancel()
         discoveryJob = serviceScope.launch {
-            try {
-                if (market == "nifty500") {
-                    runNifty500Discovery()
-                } else {
-                    runYahooDiscovery(NASDAQ_100_SYMBOLS, "NASDAQ 100", "$")
+            // Serialise against any in-flight portfolio scan so we don't share the
+            // Yahoo session with another scanner. See yahooScanLock comment.
+            if (yahooScanLock.isLocked) {
+                Log.i(TAG, "Discovery scan: portfolio scan in progress, queuing behind it")
+                updateScanNotification("Discovery queued (portfolio scan running)…")
+            }
+            yahooScanLock.withLock {
+                try {
+                    if (market == "nifty500") {
+                        runYahooDiscovery(NIFTY_500_YAHOO_SYMBOLS, "NIFTY 500", "₹", robust = robust)
+                    } else {
+                        runYahooDiscovery(NASDAQ_100_SYMBOLS, "NASDAQ 100", "$", robust = robust)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Discovery scan error", e)
+                    val errMsg = "Discovery scan failed: ${e.message}"
+                    updateScanNotification(errMsg)
+                    ScanServiceResultHolder.discoveryStatusText = errMsg
+                } finally {
+                    isDiscoveryRunning = false
+                    ScanServiceResultHolder.isDiscoveryRunning = false
+                    ScanServiceResultHolder.discoveryVersion++
                 }
-
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Discovery scan error", e)
-                val errMsg = "Discovery scan failed: ${e.message}"
-                updateScanNotification(errMsg)
-                ScanServiceResultHolder.discoveryStatusText = errMsg
-            } finally {
-                isDiscoveryRunning = false
-                ScanServiceResultHolder.isDiscoveryRunning = false
-                ScanServiceResultHolder.discoveryVersion++
             }
         }
     }
@@ -279,24 +359,21 @@ class ScanService : Service() {
     }
 
     /**
-     * Scan NIFTY 500 using Yahoo Finance for candle data.
-     * Uses the full NIFTY_500_YAHOO_SYMBOLS list (~350+ stocks from NIFTY 50 +
-     * NIFTY Next 50 + BSE 100 + Midcap 150), mirroring the Python fallback universe.
-     */
-    private suspend fun runNifty500Discovery() = withContext(Dispatchers.IO) {
-        Log.i(TAG, "NIFTY 500 discovery — scanning ${NIFTY_500_YAHOO_SYMBOLS.size} stocks via Yahoo Finance")
-        runYahooDiscovery(NIFTY_500_YAHOO_SYMBOLS, "NIFTY 500", "₹")
-    }
-
-    /**
-     * Scan a list of symbols via Yahoo Finance.
-     * Works for both NASDAQ 100 and Indian stocks (.NS suffix).
-     * Results are streamed to lastDiscoveryResult as each stock completes.
-     */
-    /**
      * Scan a list of symbols via Yahoo Finance with adaptive pacing & retry queue.
-     * Mirrors Python's run_nifty_scan() / run_nasdaq_scan() resilience logic:
-     *   - Adaptive pace: starts at 0.5s, backs off 2x on rate limit, recovers 0.95x on success
+     *
+     * Two operating points, controlled by [robust]:
+     *
+     * - FAST   (manual scans): start at 500ms pace, bail to retry after 50
+     *                          consecutive errors. ~12-15 min for NIFTY 500
+     *                          on a good network.
+     * - ROBUST (auto scans):   start at 1500ms pace, tolerate 100 consecutive
+     *                          errors before bailing, gentler retry phase.
+     *                          ~30-40 min but rarely fails midway. Used for
+     *                          background scheduled scans where the user isn't
+     *                          watching the screen.
+     *
+     * Resilience features (both modes):
+     *   - Adaptive pace: backs off 2x on rate limit, recovers 0.95x on success
      *   - Rate-limited stocks are queued for retry (not skipped)
      *   - After main pass, a retry phase re-scans failed stocks at gentler pace
      *   - Consecutive error cap triggers early exit to retry phase
@@ -304,7 +381,8 @@ class ScanService : Service() {
     private suspend fun runYahooDiscovery(
         symbols: List<String>,
         marketName: String,
-        currency: String
+        currency: String,
+        robust: Boolean = false
     ) = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val total = symbols.size
@@ -313,14 +391,17 @@ class ScanService : Service() {
         var skipped = 0
         var lastError = ""
 
-        // Adaptive pacing — mirrors Python's PACE_MIN / PACE_MAX / PACE_BACKOFF_MULT
-        var currentPace = 500L        // start at 0.5s
-        val PACE_MIN = 500L
+        // Adaptive pacing — ROBUST starts slower & tolerates more errors.
+        val PACE_MIN = if (robust) 1500L else 500L
         val PACE_MAX = 8000L
         val PACE_BACKOFF_MULT = 2.0
         val PACE_RECOVERY_MULT = 0.95
+        val errorBailThreshold = if (robust) 100 else 50
+        var currentPace = PACE_MIN
         var consecutiveErrors = 0
         val retryQueue = mutableListOf<String>()
+        Log.i(TAG, "Discovery start: $marketName mode=${if (robust) "ROBUST" else "FAST"} " +
+                "pace=${PACE_MIN}ms bail=$errorBailThreshold")
 
         val startText = "Discovery: $marketName — 0/$total scanned"
         updateScanNotification(startText)
@@ -337,11 +418,12 @@ class ScanService : Service() {
                 break
             }
 
-            // If too many consecutive errors, bail to retry phase
-            // (raised 30 → 50: the old threshold tripped too easily during Yahoo rate-limit spikes,
-            //  aborting the main pass with ~210 stocks unscanned — retry phase then often couldn't
-            //  catch up before hitting its own 20-error cap.)
-            if (consecutiveErrors >= 50) {
+            // If too many consecutive errors, bail to retry phase.
+            // FAST=50, ROBUST=100. The ROBUST cap is much higher because background
+            // scans during volatile network conditions (screen off, doze pulses)
+            // legitimately rack up errors in bursts — we'd rather slow down and
+            // wait it out than abort with hundreds of stocks unscanned.
+            if (consecutiveErrors >= errorBailThreshold) {
                 Log.w(TAG, "Discovery: $consecutiveErrors consecutive errors — queuing ${symbols.size - idx} remaining for retry phase")
                 retryQueue.addAll(symbols.subList(idx, symbols.size))
                 break
@@ -363,6 +445,13 @@ class ScanService : Service() {
                             w = weights
                         )
                         if (analysis != null) {
+                            // ── Gap between v8 (candles) and v10 (fundamentals) requests ──
+                            // Both hit Yahoo Finance. Firing them back-to-back with zero gap
+                            // effectively doubles the request rate and triggers Yahoo's rate limiter
+                            // after ~60-70 stocks (≈30s of sustained 4-req/s traffic).
+                            // A 250ms gap keeps us at a safe 2-req/s burst ceiling.
+                            delay(250L)
+
                             // Fetch fundamentals for value analysis
                             try {
                                 Log.d(TAG, "Fetching fundamentals for $symbol (exchange=$exchange)")
@@ -394,8 +483,15 @@ class ScanService : Service() {
                                             valueRating = vr.valueRating
                                         )
                                     }
-                                    is YahooFinanceClient.FundamentalResult.RateLimited ->
-                                        Log.w(TAG, "Fundamentals rate limited for $symbol — skipping value data")
+                                    is YahooFinanceClient.FundamentalResult.RateLimited -> {
+                                        // Yahoo is already stressed from our candle requests.
+                                        // Back off the global pace so the NEXT stock's candle
+                                        // fetch doesn't also get rate-limited (which would
+                                        // increment consecutiveErrors and eventually abort the scan).
+                                        currentPace = (currentPace * PACE_BACKOFF_MULT).toLong().coerceAtMost(PACE_MAX)
+                                        Log.w(TAG, "Fundamentals rate limited for $symbol — slowing pace to ${currentPace}ms, adding cool-down")
+                                        delay(2000L) // brief cool-down before next stock's candle fetch
+                                    }
                                     is YahooFinanceClient.FundamentalResult.NoData ->
                                         Log.w(TAG, "No fundamental data for $symbol")
                                     is YahooFinanceClient.FundamentalResult.Error ->
@@ -500,13 +596,14 @@ class ScanService : Service() {
             updateScanNotification("Discovery $marketName: cooling down 30s before retrying ${retryQueue.size}...")
             delay(30_000L)
 
-            val retryPace = 2000L // 2s between retries (was 1.5s) — gentler on rate limiter
+            // ROBUST retry is even slower (3s) and tolerates more errors before giving up.
+            val retryPace = if (robust) 3000L else 2000L
+            val retryErrorCap = if (robust) 80 else 40
             var retryErrors = 0
 
             for ((rIdx, symbol) in retryQueue.withIndex()) {
-                // raised 20 → 40: rate-limit flutter during retry shouldn't abort prematurely
-                if (discoveryAbort || retryErrors >= 40) {
-                    if (retryErrors >= 40) Log.w(TAG, "Discovery retry: hit $retryErrors errors — giving up on remaining ${retryQueue.size - rIdx}")
+                if (discoveryAbort || retryErrors >= retryErrorCap) {
+                    if (retryErrors >= retryErrorCap) Log.w(TAG, "Discovery retry: hit $retryErrors errors — giving up on remaining ${retryQueue.size - rIdx}")
                     break
                 }
 
@@ -645,6 +742,20 @@ class ScanService : Service() {
             return
         }
 
+        // ── Wait for the Yahoo channel ──
+        // If a discovery scan is in-flight, queue behind it instead of barging in
+        // and corrupting its crumb session. The user's observation — tapping
+        // "scan portfolio" mid-discovery causes failures — is exactly this race.
+        if (yahooScanLock.isLocked) {
+            Log.i(TAG, "Portfolio scan: discovery in progress, queuing behind it")
+            updateScanNotification("Portfolio scan queued (discovery running)…")
+        }
+        yahooScanLock.withLock {
+            runFullPortfolioScanLocked()
+        }
+    }
+
+    private suspend fun runFullPortfolioScanLocked() {
         scanCount++
         val isFullScan = scanCount % FULL_SCAN_EVERY_N == 1 || scanCount == 1
         val scanType = if (isFullScan) "Full scan" else "Quick scan"
@@ -747,7 +858,7 @@ class ScanService : Service() {
         val totalMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
 
         if (dayOfWeek == Calendar.SATURDAY || dayOfWeek == Calendar.SUNDAY) return false
-        return totalMin in (9 * 60)..(16 * 60) // 9:00 AM to 4:00 PM IST
+        return totalMin in (9 * 60 + 15)..(15 * 60 + 30) // 9:15 AM to 3:30 PM IST (actual NSE hours)
     }
 
     // ═══════════════════════════════════════════════════════
@@ -1099,6 +1210,94 @@ val NIFTY_500_YAHOO_SYMBOLS = listOf(
     "SKFINDIA","GMDCLTD","CAPACITE","SYMPHONY","SUNTECK",
     "SYRMA","INTELLECT"
 ).distinct()
+
+// ═══════════════════════════════════════════════════════
+// AUTOMATIC ROBUST DISCOVERY SCHEDULER
+//
+// Wakes the service every 2 hours during market hours (09:30, 11:30, 13:30,
+// 15:00 IST, weekdays) to run a ROBUST NIFTY 500 scan. Uses inexact
+// AlarmManager so Doze mode batches it with other wakeups for battery.
+//
+// Schedules one alarm at a time (the next slot) and re-arms after each fire,
+// so the chain self-heals across reboots / process death without needing
+// setRepeating's drift problems.
+// ═══════════════════════════════════════════════════════
+object DiscoveryAutoScheduler {
+    private const val TAG = "DiscoveryAutoSched"
+    private const val ACTION_FIRE = "com.signalscope.AUTO_DISCOVERY_FIRE"
+    private const val REQUEST_CODE = 0x5C0E
+
+    // 09:30, 11:30, 13:30, 15:00 IST — covers market open + every ~2h
+    private val SLOT_MINUTES = listOf(9 * 60 + 30, 11 * 60 + 30, 13 * 60 + 30, 15 * 60)
+
+    fun ensureScheduled(ctx: Context) {
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = android.app.PendingIntent.getBroadcast(
+            ctx, REQUEST_CODE,
+            Intent(ctx, AutoDiscoveryReceiver::class.java).setAction(ACTION_FIRE),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val nextFireWallMs = nextSlotWallTimeMs()
+        val delay = (nextFireWallMs - System.currentTimeMillis()).coerceAtLeast(60_000L)
+        val triggerAt = SystemClock.elapsedRealtime() + delay
+        // ELAPSED_REALTIME so phone-clock changes don't surprise us.
+        // setAndAllowWhileIdle so Doze doesn't suppress it (still inexact,
+        // OS may delay by a few minutes — fine for a scheduled discovery).
+        am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+        Log.i(TAG, "Next auto-discovery in ${delay / 60000} min")
+    }
+
+    /** Wall-clock millis of the next slot, skipping weekends. */
+    private fun nextSlotWallTimeMs(): Long {
+        val tz = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(tz)
+        val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        val today = cal.clone() as Calendar
+        today.set(Calendar.SECOND, 0); today.set(Calendar.MILLISECOND, 0)
+
+        // Try today's remaining slots first
+        for (slot in SLOT_MINUTES) {
+            if (slot > nowMin) {
+                today.set(Calendar.HOUR_OF_DAY, slot / 60)
+                today.set(Calendar.MINUTE, slot % 60)
+                if (isWeekday(today)) return today.timeInMillis
+            }
+        }
+        // Otherwise next valid weekday's first slot (09:30)
+        val next = today.clone() as Calendar
+        do {
+            next.add(Calendar.DAY_OF_MONTH, 1)
+        } while (!isWeekday(next))
+        next.set(Calendar.HOUR_OF_DAY, SLOT_MINUTES[0] / 60)
+        next.set(Calendar.MINUTE, SLOT_MINUTES[0] % 60)
+        return next.timeInMillis
+    }
+
+    private fun isWeekday(cal: Calendar): Boolean {
+        val d = cal.get(Calendar.DAY_OF_WEEK)
+        return d != Calendar.SATURDAY && d != Calendar.SUNDAY
+    }
+}
+
+/**
+ * Broadcast receiver that AlarmManager pokes at each scheduled slot.
+ * Kicks off a ROBUST NIFTY 500 discovery and re-arms the chain.
+ */
+class AutoDiscoveryReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent?) {
+        Log.i("AutoDiscoveryRecv", "Auto-discovery alarm fired — starting ROBUST NIFTY 500 scan")
+        // Re-arm the next slot first so a crash in the scan doesn't break the chain.
+        DiscoveryAutoScheduler.ensureScheduled(context)
+        val svc = ScanService.createIntent(context, ScanService.ACTION_DISCOVERY_NIFTY500_AUTO)
+        // Foreground service start is allowed from a broadcast triggered by
+        // setAndAllowWhileIdle (alarm-driven exemption on Android 12+).
+        try {
+            context.startForegroundService(svc)
+        } catch (e: Exception) {
+            Log.e("AutoDiscoveryRecv", "Failed to start ScanService for auto-discovery", e)
+        }
+    }
+}
 
 val NASDAQ_100_SYMBOLS = listOf(
     "AAPL","ABNB","ADBE","ADI","ADP","ADSK","AEP","AMAT","AMD","AMGN",

@@ -25,6 +25,7 @@
                                               <map>
                                                 <entry key="color" value="000000" />
                                                 <entry key="imagePath" value="C:\Users\gupta\AppData\Local\Temp\ic_android_black_24dp.xml" />
+                                                <entry key="opacityPercent" value="60" />
                                               </map>
                                             </option>
                                           </PersistentState>
@@ -79,7 +80,9 @@
                                             <option name="values">
                                               <map>
                                                 <entry key="color" value="000000" />
-                                                <entry key="imagePath" value="C:\Users\gupta\Pictures\Screenshot 2026-03-27 114657.png" />
+                                                <entry key="imagePath" value="C:\Users\gupta\Downloads\ChatGPT Image Apr 15, 2026, 11_50_53 AM.png" />
+                                                <entry key="scalingPercent" value="110" />
+                                                <entry key="trimmed" value="true" />
                                               </map>
                                             </option>
                                           </PersistentState>
@@ -151,6 +154,13 @@
                                           </PersistentState>
                                         </value>
                                       </entry>
+                                    </map>
+                                  </option>
+                                  <option name="values">
+                                    <map>
+                                      <entry key="backgroundAssetType" value="COLOR" />
+                                      <entry key="backgroundColor" value="050303" />
+                                      <entry key="previewDensity" value="xxxhdpi" />
                                     </map>
                                   </option>
                                 </PersistentState>
@@ -314,6 +324,11 @@
                                           </PersistentState>
                                         </value>
                                       </entry>
+                                    </map>
+                                  </option>
+                                  <option name="values">
+                                    <map>
+                                      <entry key="previewDensity" value="xxxhdpi" />
                                     </map>
                                   </option>
                                 </PersistentState>

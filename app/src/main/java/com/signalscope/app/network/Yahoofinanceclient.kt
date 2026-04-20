@@ -140,7 +140,12 @@ object YahooFinanceClient {
         val candles: List<CandleData>,
         val fullFetchTime: Long  // millis when the full 2y fetch was done
     )
-    private val candleCache = mutableMapOf<String, CachedCandles>()
+    private const val MAX_CACHE_SIZE = 150 // LRU eviction — prevents OOM during 500-stock discovery scans
+    private val candleCache = object : LinkedHashMap<String, CachedCandles>(MAX_CACHE_SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedCandles>?): Boolean {
+            return size > MAX_CACHE_SIZE
+        }
+    }
     private const val FULL_FETCH_INTERVAL_MS = 12 * 60 * 60 * 1000L  // re-fetch full 2y every 12 hours
 
     /** Clear all cached candle data (e.g. on service restart or day boundary). */

@@ -1,5 +1,6 @@
 R_DEF: Internal format may change without notice
 local
+color ic_launcher_background
 drawable badge_hold_bg
 drawable badge_phase_bg
 drawable badge_sell_bg
@@ -17,6 +18,7 @@ id alertSellScore
 id alertStrip
 id alertSymbol
 id alertsList
+id appLogo
 id btnDiscoveryNasdaq
 id btnDiscoveryNifty
 id btnDiscoveryStop

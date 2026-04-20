@@ -180,11 +180,17 @@ object StockAnalyzer {
         }
         val belowMidBand = bbMid != null && price <= bbMid
 
-        // ── Support / Resistance ──
-        val sr = Indicators.findSupportResistance(highs, lows, closes, min(60, n - 10))
+        // ── Support / Resistance (Tier 1: adaptive lookback + ATR clustering + scoring) ──
+        // Pass lookback = -1 so the algorithm picks its own window based on the
+        // stock's natural cycle length (pivot density). This replaces the fixed 60-day
+        // window which was blind to levels like BHARTIARTL's ₹2050 from 5 months ago.
+        val sr = Indicators.findSupportResistance(highs, lows, closes, lookback = -1)
         val risk = (price - sr.support).round(2)
         val reward = (sr.resistance - price).round(2)
         val rrRatio = if (risk > 0) (reward / risk).round(2) else 0.0
+
+        // ── Tier 2: Wave projection (cheap, precomputed here; surfaced only on-tap in UI) ──
+        val waveProjection = Indicators.projectWaveRange(closes, daysAhead = 20)
 
         // ── ATR ──
         val atrValues = Indicators.atr(highs, lows, closes, 14)
@@ -438,7 +444,10 @@ object StockAnalyzer {
             isBuy = buyScore >= 75,
             isModerateBuy = buyScore >= 60,
             isSell = sellIntent == "STRONG EXIT" || sellIntent == "PROTECT CAPITAL",
-            isModerateSell = sellIntent == "BOOK PROFIT"
+            isModerateSell = sellIntent == "BOOK PROFIT",
+            projectedCeiling = waveProjection?.projectedCeiling,
+            projectedFloor = waveProjection?.projectedFloor,
+            projectedMidpoint = waveProjection?.projectedMidpoint
         )
     }
 

@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- WiFi lock keeps the radio awake during long scans so packets don't drop
+         when the screen turns off / phone goes idle (root cause of mid-scan stalls). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- AlarmManager wake-ups for the automatic ROBUST discovery schedule
+         (every 2h during market hours). Inexact is enough — we don't need
+         to-the-second precision and inexact survives Doze better. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <application
         android:name=".SignalScopeApp"
@@ -58,6 +65,13 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+
+        <!-- AlarmManager receiver: fires every 2h during market hours
+             to start an automatic ROBUST NIFTY 500 discovery scan.
+             Not exported — only the OS alarm system pokes it. -->
+        <receiver
+            android:name=".service.AutoDiscoveryReceiver"
+            android:exported="false" />
 
         <!-- FileProvider for sharing PDFs from cache -->
         <provider

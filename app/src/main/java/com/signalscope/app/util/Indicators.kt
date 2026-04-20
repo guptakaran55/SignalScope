@@ -204,29 +204,83 @@ object Indicators {
     }
 
     // ═══════════════════════════════════════════════════════
-    // SUPPORT & RESISTANCE (swing point clustering)
+    // SUPPORT & RESISTANCE — Tier 1 adaptive algorithm
+    //
+    // Upgrades over the naive 60-day/1.5% version:
+    //   (a) ADAPTIVE LOOKBACK: measures the stock's natural cycle length
+    //       by counting pivot density in the last 120 days. Fast-cycling
+    //       stocks use a short window; slow-trending stocks use a long one.
+    //       (Fixes cases like BHARTIARTL where the true resistance at ₹2050
+    //        is 5 months old and was invisible to the old 60-day window.)
+    //   (b) ATR-BASED CLUSTERING: clustering tolerance scales with the stock's
+    //       volatility (0.8 × ATR) instead of a fixed 1.5% everywhere.
+    //   (c) CLUSTER SCORING: each cluster is ranked by
+    //         score = touches × avg_reversal_size × recency_weight
+    //       so a level tested 3 times beats one tested once, even if the
+    //       latter is slightly nearer. Returns the STRONGEST cluster that
+    //       passes the distance filter.
+    //   (d) MIN-DISTANCE FILTER (≥1 × ATR): rejects levels within one day's
+    //       typical move — those are noise, not resistance.
+    //   (e) ROLE REVERSAL: broken supports above current price are treated
+    //       as resistance, broken resistances below as support.
     // ═══════════════════════════════════════════════════════
 
     data class SupportResistance(val support: Double, val resistance: Double)
+
+    /**
+     * Estimate a good lookback window based on swing-point density.
+     * Runs a quick low-resolution pivot scan over the last 120 days;
+     * many pivots → short natural cycle → short lookback.
+     */
+    private fun estimateAdaptiveLookback(highs: List<Double>, lows: List<Double>): Int {
+        val scanLen = min(120, highs.size - 10)
+        if (scanLen < 30) return min(60, highs.size - 10)
+
+        val rH = highs.takeLast(scanLen)
+        val rL = lows.takeLast(scanLen)
+        val w = 3  // looser pivot window for fast cycle estimation
+        var pivots = 0
+        for (i in w until rH.size - w) {
+            var isHigh = true
+            var isLow = true
+            for (j in 1..w) {
+                if (rH[i] <= rH[i - j] || rH[i] <= rH[i + j]) isHigh = false
+                if (rL[i] >= rL[i - j] || rL[i] >= rL[i + j]) isLow = false
+            }
+            if (isHigh || isLow) pivots++
+        }
+
+        // Pivots alternate high/low → a full cycle ≈ 2 pivots.
+        // Cycle length (days) ≈ scanLen / (pivots / 2) = 2 × scanLen / pivots
+        // Lookback should contain ~4–5 full cycles to see repeated tests.
+        val cycleLen = if (pivots < 2) scanLen else (2.0 * scanLen / pivots).toInt()
+        val lookback = (cycleLen * 5).coerceIn(50, 252)
+        return min(lookback, highs.size - 10)
+    }
 
     fun findSupportResistance(
         highs: List<Double>,
         lows: List<Double>,
         closes: List<Double>,
-        lookback: Int = 60
+        lookback: Int = -1  // -1 = auto (adaptive); positive value overrides
     ): SupportResistance {
         val n = closes.size
-        val lb = min(lookback, n - 10)
+        val lb = if (lookback > 0) min(lookback, n - 10) else estimateAdaptiveLookback(highs, lows)
         val price = closes.last()
 
         val rHighs = highs.takeLast(lb)
         val rLows = lows.takeLast(lb)
         val rCloses = closes.takeLast(lb)
 
-        val window = 5
-        val swingHighs = mutableListOf<Double>()
-        val swingLows = mutableListOf<Double>()
+        // Compute ATR over the last 14 bars for volatility-scaled clustering/filtering
+        val atrSeries = atr(highs, lows, closes, 14)
+        val atrVal = atrSeries.lastOrNull()?.takeIf { it > 0 } ?: (price * 0.01) // fallback 1%
 
+        // ── Detect swing highs/lows with 5-bar pivots ──
+        data class Pivot(val price: Double, val idx: Int)  // idx in the windowed slice (0 = oldest)
+        val window = 5
+        val swingHighs = mutableListOf<Pivot>()
+        val swingLows = mutableListOf<Pivot>()
         for (i in window until rHighs.size - window) {
             var isHigh = true
             var isLow = true
@@ -234,45 +288,144 @@ object Indicators {
                 if (rHighs[i] <= rHighs[i - j] || rHighs[i] <= rHighs[i + j]) isHigh = false
                 if (rLows[i] >= rLows[i - j] || rLows[i] >= rLows[i + j]) isLow = false
             }
-            if (isHigh) swingHighs.add(rHighs[i])
-            if (isLow) swingLows.add(rLows[i])
+            if (isHigh) swingHighs.add(Pivot(rHighs[i], i))
+            if (isLow) swingLows.add(Pivot(rLows[i], i))
         }
 
-        fun clusterLevels(levels: List<Double>, thresholdPct: Double = 1.5): List<Double> {
-            if (levels.isEmpty()) return emptyList()
-            val sorted = levels.sorted()
-            val clusters = mutableListOf<Double>()
-            val current = mutableListOf(sorted[0])
-            for (lv in sorted.drop(1)) {
-                if (current.isNotEmpty() && (lv - current[0]) / current[0] * 100 <= thresholdPct) {
-                    current.add(lv)
-                } else {
-                    clusters.add(current.average())
-                    current.clear()
-                    current.add(lv)
+        // ── ATR-based clustering ──
+        // Two pivots join the same cluster if within 0.8 × ATR of each other.
+        // Output: list of (avgPrice, touchCount, avgReversal, latestIdx)
+        data class Cluster(val price: Double, val touches: Int, val avgReversal: Double, val latestIdx: Int)
+
+        fun cluster(pivots: List<Pivot>, isResistance: Boolean): List<Cluster> {
+            if (pivots.isEmpty()) return emptyList()
+            val tol = 0.8 * atrVal
+            val sorted = pivots.sortedBy { it.price }
+            val groups = mutableListOf<MutableList<Pivot>>()
+            var curr = mutableListOf(sorted[0])
+            for (p in sorted.drop(1)) {
+                if (p.price - curr[0].price <= tol) curr.add(p)
+                else {
+                    groups.add(curr); curr = mutableListOf(p)
                 }
             }
-            clusters.add(current.average())
-            return clusters
+            groups.add(curr)
+
+            return groups.map { g ->
+                val avgP = g.map { it.price }.average()
+                val latestIdx = g.maxOf { it.idx }
+                // avg reversal: how far price moved AWAY from the level in the 5 bars after each pivot
+                val reversals = g.mapNotNull { pv ->
+                    val afterIdx = pv.idx + 5
+                    if (afterIdx >= rCloses.size) null
+                    else {
+                        val priceAfter = rCloses[afterIdx]
+                        if (isResistance) (pv.price - priceAfter).coerceAtLeast(0.0)
+                        else (priceAfter - pv.price).coerceAtLeast(0.0)
+                    }
+                }
+                val avgRev = if (reversals.isEmpty()) atrVal else reversals.average()
+                Cluster(avgP, g.size, avgRev, latestIdx)
+            }
         }
 
-        var resLevels = clusterLevels(swingHighs.filter { it > price })
-        var supLevels = clusterLevels(swingLows.filter { it < price })
+        val resClusters = cluster(swingHighs, isResistance = true)
+        val supClusters = cluster(swingLows, isResistance = false)
 
-        // Pivot fallback
-        val pivot = (rHighs.last() + rLows.last() + rCloses.last()) / 3
-        val r1 = 2 * pivot - rLows.last()
-        val s1 = 2 * pivot - rHighs.last()
+        // ── Score clusters: touches × reversal × recency ──
+        fun score(c: Cluster): Double {
+            val touchBonus = c.touches.toDouble()
+            val reversalBonus = (c.avgReversal / atrVal).coerceAtMost(5.0)
+            // recency: latestIdx is [0, lb). Higher idx = more recent. Weight 0.5 → 1.5 linearly.
+            val recency = 0.5 + (c.latestIdx.toDouble() / lb) * 1.0
+            return touchBonus * reversalBonus * recency
+        }
 
-        if (supLevels.isEmpty()) supLevels = listOf(if (s1 < price) s1 else rLows.min())
-        if (resLevels.isEmpty()) resLevels = listOf(if (r1 > price) r1 else rHighs.max())
+        // ── Select resistance ──
+        // Candidates: all clusters above (price + 1 × ATR)  — min-distance filter.
+        // ALSO include clusters below current price that got broken → role reversal candidates
+        //   (only if significantly above current, to avoid picking the just-broken support).
+        val minDistance = atrVal
+        val resCandidates = mutableListOf<Cluster>()
+        resClusters.filter { it.price >= price + minDistance }.forEach { resCandidates.add(it) }
+        // Role reversal: a broken support cluster well above current price acts as resistance
+        supClusters.filter { it.price >= price + minDistance * 2 }.forEach { resCandidates.add(it) }
 
-        val support = supLevels.filter { it < price }.maxOrNull() ?: rLows.min()
-        val resistance = resLevels.filter { it > price }.minOrNull() ?: rHighs.max()
+        val resistance = resCandidates.maxByOrNull { score(it) }?.price
+            ?: run {
+                // Fallback: raw pivot R1, then the all-time max in window
+                val pivot = (rHighs.last() + rLows.last() + rCloses.last()) / 3
+                val r1 = 2 * pivot - rLows.last()
+                if (r1 > price) r1 else rHighs.max()
+            }
+
+        // ── Select support (mirror logic) ──
+        val supCandidates = mutableListOf<Cluster>()
+        supClusters.filter { it.price <= price - minDistance }.forEach { supCandidates.add(it) }
+        // Role reversal: a broken resistance well below current price acts as support
+        resClusters.filter { it.price <= price - minDistance * 2 }.forEach { supCandidates.add(it) }
+
+        val support = supCandidates.maxByOrNull { score(it) }?.price
+            ?: run {
+                val pivot = (rHighs.last() + rLows.last() + rCloses.last()) / 3
+                val s1 = 2 * pivot - rHighs.last()
+                if (s1 < price) s1 else rLows.min()
+            }
 
         return SupportResistance(
             support = Math.round(support * 100.0) / 100.0,
             resistance = Math.round(resistance * 100.0) / 100.0
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // TIER 2 — WAVE PROJECTION (on-demand, via detail-modal button)
+    //
+    // Projects a "where is this stock likely to oscillate next" range
+    // based on:
+    //   trend   = current EMA50 + its recent slope extrapolated forward
+    //   envelope = ±2σ of (price − EMA50) over last 50 days
+    // NOT a forecast of exact price — a probabilistic channel.
+    // Cheap: runs in <5ms. Precomputed during scan but hidden behind a
+    // button so users treat it as prediction, not fact.
+    // ═══════════════════════════════════════════════════════
+
+    data class WaveProjection(
+        val projectedCeiling: Double,
+        val projectedFloor: Double,
+        val projectedMidpoint: Double,  // trend-only midpoint (where EMA50 will be)
+        val daysAhead: Int
+    )
+
+    fun projectWaveRange(closes: List<Double>, daysAhead: Int = 20): WaveProjection? {
+        val n = closes.size
+        if (n < 60) return null
+
+        val ema50Series = ema(closes, 50)
+        val ema50Now = ema50Series.lastOrNull() ?: return null
+        if (ema50Now <= 0) return null
+
+        // Slope = (EMA50 now − EMA50 ten bars ago) / 10 → per-day rate
+        val ema50Past = ema50Series.getOrNull(n - 11) ?: ema50Now
+        val slopePerDay = (ema50Now - ema50Past) / 10.0
+
+        // Envelope = 2σ of (close − EMA50) over last 50 bars
+        val recentResid = (n - 50 until n).mapNotNull { i ->
+            val e = ema50Series.getOrNull(i) ?: return@mapNotNull null
+            closes[i] - e
+        }
+        if (recentResid.isEmpty()) return null
+        val mean = recentResid.average()
+        val variance = recentResid.map { (it - mean) * (it - mean) }.average()
+        val stdDev = kotlin.math.sqrt(variance)
+        val envelope = 2.0 * stdDev
+
+        val projectedMid = ema50Now + slopePerDay * daysAhead
+        return WaveProjection(
+            projectedCeiling = Math.round((projectedMid + envelope) * 100.0) / 100.0,
+            projectedFloor = Math.round((projectedMid - envelope) * 100.0) / 100.0,
+            projectedMidpoint = Math.round(projectedMid * 100.0) / 100.0,
+            daysAhead = daysAhead
         )
     }
 }
