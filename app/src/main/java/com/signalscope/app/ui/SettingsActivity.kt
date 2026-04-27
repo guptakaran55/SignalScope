@@ -37,6 +37,21 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var spinnerInterval: Spinner
     private lateinit var switchMarketHours: Switch
     private lateinit var switchVibrate: Switch
+    private lateinit var switchAutoCreateGtt: Switch
+    private lateinit var switchAutoTrailing: Switch
+    private lateinit var switchAutoExit: Switch
+    private lateinit var switchMacdFlipNotifications: Switch
+    private lateinit var switchAutoSoftSniper: Switch
+    private lateinit var etSoftSniperBufferPct: EditText
+    private lateinit var etSoftSniperLimitPct: EditText
+    private lateinit var etSoftSniperMinGainPct: EditText
+    private lateinit var etSoftSniperTightBufferPct: EditText
+    private lateinit var etSoftSniperLooseBufferPct: EditText
+    private lateinit var etSoftSniperVolSpikeMult: EditText
+    private lateinit var etSoftSniperVolWeakMult: EditText
+    private lateinit var switchAutoTrailingTarget: android.widget.Switch
+    private lateinit var etTargetAtrMultiple: EditText
+    private lateinit var etTargetMaxDailyStepPct: EditText
 
     // ── LLM / AI fields ──
     private lateinit var etLlmApiKey: EditText
@@ -184,6 +199,269 @@ class SettingsActivity : AppCompatActivity() {
         }
         inner.addView(switchVibrate)
 
+        // ── Automated GTT / Trailing SL section ──
+        addSection("🤖 Automated GTT & Trailing SL  (15:20 IST daily tick)")
+
+        inner.addView(TextView(this).apply {
+            text = "These run automatically at 15:20 IST on weekdays, 9 min before market close.\n" +
+                   "Ordered safest → hottest: create (server-side, conditional) → trail (nudges GTT up) → exit (live sell order)."
+            textSize = 11f
+            setPadding(0, 0, 0, 8)
+            setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+        })
+
+        switchAutoCreateGtt = Switch(this).apply {
+            text = "Auto-create OCO GTT for new holdings"
+            setPadding(0, 12, 0, 0)
+        }
+        inner.addView(switchAutoCreateGtt)
+        inner.addView(TextView(this).apply {
+            text = "If you buy a stock and it has NO GTT by 15:20, the system creates one:\n" +
+                   "  • SL  = support level  (floored at −10% from your avg price)\n" +
+                   "  • TGT = resistance  (or wave projection ceiling if available)\n" +
+                   "Protects gap-down overnight risk for same-day buys automatically."
+            textSize = 10f
+            setPadding(32, 4, 0, 8)
+            setTextColor(android.graphics.Color.parseColor("#64748b"))
+        })
+
+        switchAutoTrailing = Switch(this).apply {
+            text = "Auto-trail SL upward as stock rises"
+            setPadding(0, 12, 0, 0)
+        }
+        inner.addView(switchAutoTrailing)
+        inner.addView(TextView(this).apply {
+            text = "Raises your existing SL GTT using the Chandelier exit formula (ATR-based).\n" +
+                   "Monotonic — never lowers an SL. Skipped for the first 5 days after entry."
+            textSize = 10f
+            setPadding(32, 4, 0, 8)
+            setTextColor(android.graphics.Color.parseColor("#64748b"))
+        })
+
+        switchAutoExit = Switch(this).apply {
+            text = "🔥 Auto-exit via MACD watchdog  (places LIVE SELL orders)"
+            setPadding(0, 12, 0, 0)
+        }
+        inner.addView(switchAutoExit)
+        inner.addView(TextView(this).apply {
+            text = "⚠ THIS is the genuinely hot switch — places a live SELL order immediately.\n" +
+                   "Fires only when: histogram < 50% of peak AND negative ≥ adaptive filter days AND gain > 3%.\n" +
+                   "Places limit → limit → market ladder. Unlike GTT create/trail, this cannot be undone.\n" +
+                   "Enable only after you've watched the watchdog log in dry-run mode for a few weeks."
+            textSize = 10f
+            setPadding(32, 4, 0, 8)
+            setTextColor(android.graphics.Color.parseColor("#dc2626"))
+        })
+
+        switchMacdFlipNotifications = Switch(this).apply {
+            text = "🔔 MACD-flip push notifications at 15:20"
+            setPadding(0, 12, 0, 0)
+        }
+        inner.addView(switchMacdFlipNotifications)
+        inner.addView(TextView(this).apply {
+            text = "When the MACD histogram watchdog confirms a sell at 15:20, send a high-priority phone notification.\n" +
+                   "Turn OFF for vacation mode — the watchdog still records the alert in the in-app history\n" +
+                   "and still places sniper GTTs (if enabled), it just won't buzz your phone."
+            textSize = 10f
+            setPadding(32, 4, 0, 8)
+            setTextColor(android.graphics.Color.parseColor("#64748b"))
+        })
+
+        // ── Tier 1.5 Soft Sniper ────────────────────────────────────────────
+        // Auto-places a SELL GTT ~3% below LTP the moment a BOOK_PROFIT alert
+        // fires intraday — bridges the gap between the 15-min advisory and the
+        // 7+ day hard watchdog. Cleanly replaced by the hard sniper if the
+        // watchdog later confirms (replaceSniperGtt cancels existing SELL GTTs).
+        switchAutoSoftSniper = Switch(this).apply {
+            text = "🎯 Tier 1.5 Soft Sniper (auto-GTT on BOOK_PROFIT)"
+            setPadding(0, 12, 0, 0)
+        }
+        inner.addView(switchAutoSoftSniper)
+        inner.addView(TextView(this).apply {
+            text = "When a BOOK_PROFIT alert fires (SELL FLIP + score thresholds + gain ≥ 3%),\n" +
+                   "automatically place a single-leg SELL GTT at LTP × (1 − buffer%).\n" +
+                   "Fires within 15 min of phase change — much faster than waiting for the\n" +
+                   "daily watchdog (which needs minBarsFilter consecutive negative-histogram days).\n" +
+                   "If the hard watchdog later confirms, the soft GTT is auto-replaced by the\n" +
+                   "tighter 1.5%-buffer sniper. Default OFF — opt-in (places real GTTs)."
+            textSize = 10f
+            setPadding(32, 4, 0, 8)
+            setTextColor(android.graphics.Color.parseColor("#64748b"))
+        })
+
+        // Three numeric tunables. Plain EditText fields (consistent with other
+        // numeric settings in this activity) — defaults are sensible for most
+        // users; power users can tune per their risk tolerance.
+        inner.addView(TextView(this).apply {
+            text = "Trigger buffer below LTP (%)  — default 3.0"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etSoftSniperBufferPct = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "3.0"
+            textSize = 13f
+        }
+        inner.addView(etSoftSniperBufferPct)
+
+        inner.addView(TextView(this).apply {
+            text = "Limit price pad inside trigger (%)  — default 0.5"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etSoftSniperLimitPct = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "0.5"
+            textSize = 13f
+        }
+        inner.addView(etSoftSniperLimitPct)
+
+        inner.addView(TextView(this).apply {
+            text = "Minimum gain to trigger (%)  — default 5.0"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etSoftSniperMinGainPct = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "5.0"
+            textSize = 13f
+        }
+        inner.addView(etSoftSniperMinGainPct)
+        inner.addView(TextView(this).apply {
+            text = "Below this gain, the BOOK_PROFIT alert still fires but no GTT is placed —\n" +
+                   "the position isn't yet worth protecting with broker-side automation."
+            textSize = 10f
+            setPadding(32, 4, 0, 12)
+            setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+        })
+
+        // ── Dynamic Soft-Sniper Buffer (volume-aware) ──
+        inner.addView(TextView(this).apply {
+            text = "Dynamic Buffer (volume-aware tiers)"
+            textSize = 12f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(16, 16, 0, 4)
+            setTextColor(android.graphics.Color.parseColor("#1f2937"))
+        })
+
+        inner.addView(TextView(this).apply {
+            text = "Tight buffer (%) — when MACD flips red on a high-volume bar (default 1.5)"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etSoftSniperTightBufferPct = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "1.5"
+            textSize = 13f
+        }
+        inner.addView(etSoftSniperTightBufferPct)
+
+        inner.addView(TextView(this).apply {
+            text = "Loose buffer (%) — when score crossed but no volume/OBV confirmation (default 4.0)"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etSoftSniperLooseBufferPct = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "4.0"
+            textSize = 13f
+        }
+        inner.addView(etSoftSniperLooseBufferPct)
+
+        inner.addView(TextView(this).apply {
+            text = "Volume spike multiple — vol/avg20 ≥ this counts as confirmed flush (default 1.30)"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etSoftSniperVolSpikeMult = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "1.30"
+            textSize = 13f
+        }
+        inner.addView(etSoftSniperVolSpikeMult)
+
+        inner.addView(TextView(this).apply {
+            text = "Volume weak multiple — vol/avg20 < this SKIPS placement (default 0.70)"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etSoftSniperVolWeakMult = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "0.70"
+            textSize = 13f
+        }
+        inner.addView(etSoftSniperVolWeakMult)
+
+        inner.addView(TextView(this).apply {
+            text = "TIGHT fires when smart money is flushing (vol spike + MACD red).\n" +
+                   "NORMAL = the buffer above (3%), used on OBV divergence alone.\n" +
+                   "LOOSE used when score crossed but no confirmation. Below WEAK threshold,\n" +
+                   "soft sniper SKIPS — likely false positive on thin trade."
+            textSize = 10f
+            setPadding(32, 4, 0, 12)
+            setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+        })
+
+        // ── Trailing OCO Target (asymmetric upside trail) ──
+        inner.addView(TextView(this).apply {
+            text = "Trailing OCO Target (upside)"
+            textSize = 12f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(16, 16, 0, 4)
+            setTextColor(android.graphics.Color.parseColor("#1f2937"))
+        })
+
+        switchAutoTrailingTarget = android.widget.Switch(this).apply {
+            text = "Trail OCO target up daily"
+            textSize = 13f
+            setPadding(16, 4, 0, 4)
+        }
+        inner.addView(switchAutoTrailingTarget)
+
+        inner.addView(TextView(this).apply {
+            text = "Target ATR multiple (default 2.0) — distance from LTP for the new target"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etTargetAtrMultiple = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "2.0"
+            textSize = 13f
+        }
+        inner.addView(etTargetAtrMultiple)
+
+        inner.addView(TextView(this).apply {
+            text = "Max daily step (%) — anti-spike cap on single-day target jump (default 8.0)"
+            textSize = 11f
+            setPadding(32, 8, 0, 2)
+            setTextColor(android.graphics.Color.parseColor("#374151"))
+        })
+        etTargetMaxDailyStepPct = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "8.0"
+            textSize = 13f
+        }
+        inner.addView(etTargetMaxDailyStepPct)
+
+        inner.addView(TextView(this).apply {
+            text = "Each daily tick: candidate = LTP + (ATR mult × ATR). Target ratchets UP only,\n" +
+                   "never down. Daily step capped to prevent flash-crash bounce candles from\n" +
+                   "pushing the target unrealistically far. Bumps < 1% are skipped to avoid\n" +
+                   "GTT API spam. When OFF, daily logs show 'would update' lines so you can\n" +
+                   "preview behaviour before flipping the switch on."
+            textSize = 10f
+            setPadding(32, 4, 0, 12)
+            setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+        })
+
         // ── AI / LLM section ──
         addSection("AI Stock Analysis (Optional)")
 
@@ -292,6 +570,103 @@ class SettingsActivity : AppCompatActivity() {
             weightFields[key] = et
         }
 
+        // Slider row — SeekBar-backed tunable with a live value readout.
+        // Internally still writes to a hidden EditText so the existing
+        // loadWeightValues / buildWeightsFromUI plumbing works unchanged.
+        fun addWeightSlider(
+            parent: LinearLayout,
+            key: String,
+            label: String,
+            default: Number,
+            min: Double,
+            max: Double,
+            step: Double
+        ) {
+            val isDouble = default is Double || step < 1.0
+            val steps = ((max - min) / step).toInt().coerceAtLeast(1)
+            val defaultVal = (default.toDouble()).coerceIn(min, max)
+            val defaultProgress = (((defaultVal - min) / step).toInt()).coerceIn(0, steps)
+
+            val container = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 8, 0, 8)
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            }
+
+            val header = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            }
+            val lbl = TextView(this).apply {
+                this.text = label; textSize = 12f
+                setTextColor(Color.parseColor("#374151"))
+                layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+            }
+            val valTv = TextView(this).apply {
+                textSize = 12f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#2563eb"))
+                layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+            }
+            val rec = TextView(this).apply {
+                this.text = "  [$default]"; textSize = 10f
+                setTextColor(Color.parseColor("#9ca3af"))
+                layoutParams = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+            }
+            header.addView(lbl); header.addView(valTv); header.addView(rec)
+
+            // Hidden EditText — backs the existing read/write plumbing
+            val et = EditText(this).apply {
+                inputType = if (isDouble)
+                    InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                else InputType.TYPE_CLASS_NUMBER
+                visibility = View.GONE
+            }
+
+            val seek = SeekBar(this).apply {
+                this.max = steps
+                progress = defaultProgress
+                layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+            }
+
+            fun progressToValue(p: Int): String {
+                val raw = min + p * step
+                return if (isDouble) String.format("%.3f", raw).trimEnd('0').trimEnd('.')
+                else raw.toInt().toString()
+            }
+            // Seed EditText + readout
+            valTv.text = progressToValue(defaultProgress)
+            et.setText(valTv.text)
+
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    val v = progressToValue(p)
+                    valTv.text = v
+                    et.setText(v)
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+
+            // Keep SeekBar in sync when loadWeightValues() writes to EditText
+            et.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    val d = s?.toString()?.toDoubleOrNull() ?: return
+                    val p = (((d - min) / step).toInt()).coerceIn(0, steps)
+                    if (seek.progress != p) seek.progress = p
+                    if (valTv.text.toString() != s.toString()) valTv.text = s.toString()
+                }
+            })
+
+            container.addView(header)
+            container.addView(seek)
+            container.addView(et)
+            parent.addView(container)
+            weightFields[key] = et
+        }
+
         // Helper to add schema description text inside a section
         fun addSchemaNote(parent: LinearLayout, text: String) {
             parent.addView(TextView(this).apply {
@@ -352,6 +727,16 @@ class SettingsActivity : AppCompatActivity() {
         addWeightRow(buySection, "buyEarlyBuyPts", "Early buy", defaults.buyEarlyBuyPts)
         addWeightRow(buySection, "buyMacdPctlBonus", "MACD pctl bonus", defaults.buyMacdPctlBonus)
         addWeightRow(buySection, "buyMacdPctlThreshold", "Pctl threshold ≤", defaults.buyMacdPctlThreshold)
+
+        // -- MACD Slope Tunables (kept as plain editable defaults here; live sliders are in the Setups tab) --
+        addSubHeader(buySection, "MACD Slope Thresholds (defaults for Setups tab)")
+        addSchemaNote(buySection,
+            "These values act as the DEFAULTS for the Setups-tab sliders.\n" +
+            "d(MACD)/dt MIN: below this magnitude slope is considered flat — affects BUY FLIP / SELL FLIP detection.\n" +
+            "d(MACD)/dt MAX for Golden Buy: MACD slope must be at or below this (near-flat near a 1Y low) to qualify.\n" +
+            "Live adjustments happen on the Setups tab; those reset to these defaults on app reopen.")
+        addWeightRow(buySection, "minSlopeMagnitude", "d(MACD)/dt minimum", defaults.minSlopeMagnitude)
+        addWeightRow(buySection, "goldenBuyMaxSlope", "d(MACD)/dt max (Golden Buy)", defaults.goldenBuyMaxSlope)
 
         // -- RSI --
         addSubHeader(buySection, "3. RSI Oversold + Momentum Flip")
@@ -661,6 +1046,22 @@ class SettingsActivity : AppCompatActivity() {
 
         switchMarketHours.isChecked = config.scanDuringMarketHoursOnly
         switchVibrate.isChecked = config.vibrateOnAlerts
+        switchAutoCreateGtt.isChecked = config.autoCreateGtt
+        switchAutoTrailing.isChecked = config.autoTrailingEnabled
+        switchAutoExit.isChecked = config.autoExitEnabled
+        switchMacdFlipNotifications.isChecked = config.macdFlipNotificationsEnabled
+        switchAutoSoftSniper.isChecked = config.autoSoftSniperEnabled
+        // Stored as fractions (0.03), surfaced as percentages (3.0) for readability
+        etSoftSniperBufferPct.setText("%.2f".format(config.softSniperBufferPct * 100.0))
+        etSoftSniperLimitPct.setText("%.2f".format(config.softSniperLimitPct * 100.0))
+        etSoftSniperMinGainPct.setText("%.2f".format(config.softSniperMinGainPct))
+        etSoftSniperTightBufferPct.setText("%.2f".format(config.softSniperTightBufferPct * 100.0))
+        etSoftSniperLooseBufferPct.setText("%.2f".format(config.softSniperLooseBufferPct * 100.0))
+        etSoftSniperVolSpikeMult.setText("%.2f".format(config.softSniperVolumeSpikeMultiple))
+        etSoftSniperVolWeakMult.setText("%.2f".format(config.softSniperVolumeWeakMultiple))
+        switchAutoTrailingTarget.isChecked = config.autoTrailingTargetEnabled
+        etTargetAtrMultiple.setText("%.2f".format(config.targetAtrMultiple))
+        etTargetMaxDailyStepPct.setText("%.2f".format(config.targetMaxDailyStepPct * 100.0))
 
         // LLM settings
         etLlmApiKey.setText(config.openaiApiKey)
@@ -699,6 +1100,7 @@ class SettingsActivity : AppCompatActivity() {
             "buyAdxBasePts" to w.buyAdxBasePts, "buyAdxVeryStrongBonus" to w.buyAdxVeryStrongBonus,
             "buyObvPts" to w.buyObvPts, "buyEmaMaxPts" to w.buyEmaMaxPts,
             "buyStrongThreshold" to w.buyStrongThreshold, "buyModerateThreshold" to w.buyModerateThreshold,
+            "minSlopeMagnitude" to w.minSlopeMagnitude, "goldenBuyMaxSlope" to w.goldenBuyMaxSlope,
             // Profit Booking
             "profitSlopeCrossDnPts" to w.profitSlopeCrossDnPts, "profitEarlySellPts" to w.profitEarlySellPts,
             "profitMacdZeroCrossDnPts" to w.profitMacdZeroCrossDnPts, "profitMacdPctlBonus" to w.profitMacdPctlBonus,
@@ -781,6 +1183,8 @@ class SettingsActivity : AppCompatActivity() {
             buyEmaMaxPts = readInt("buyEmaMaxPts", d.buyEmaMaxPts),
             buyStrongThreshold = readInt("buyStrongThreshold", d.buyStrongThreshold),
             buyModerateThreshold = readInt("buyModerateThreshold", d.buyModerateThreshold),
+            minSlopeMagnitude = readDouble("minSlopeMagnitude", d.minSlopeMagnitude),
+            goldenBuyMaxSlope = readDouble("goldenBuyMaxSlope", d.goldenBuyMaxSlope),
             profitSlopeCrossDnPts = readInt("profitSlopeCrossDnPts", d.profitSlopeCrossDnPts),
             profitEarlySellPts = readInt("profitEarlySellPts", d.profitEarlySellPts),
             profitMacdZeroCrossDnPts = readInt("profitMacdZeroCrossDnPts", d.profitMacdZeroCrossDnPts),
@@ -861,6 +1265,42 @@ class SettingsActivity : AppCompatActivity() {
         }
         config.scanDuringMarketHoursOnly = switchMarketHours.isChecked
         config.vibrateOnAlerts = switchVibrate.isChecked
+        config.autoCreateGtt = switchAutoCreateGtt.isChecked
+        config.autoTrailingEnabled = switchAutoTrailing.isChecked
+        config.autoExitEnabled = switchAutoExit.isChecked
+        config.macdFlipNotificationsEnabled = switchMacdFlipNotifications.isChecked
+        // Soft sniper — clamp to safe ranges so a typo can't place crazy GTTs.
+        // Buffer 0.5–10% (>10% defeats the purpose; <0.5% would fire on spread).
+        // Limit 0.0–3% inside trigger. MinGain 0–50%.
+        config.autoSoftSniperEnabled = switchAutoSoftSniper.isChecked
+        val bufPct = etSoftSniperBufferPct.text.toString().toDoubleOrNull() ?: 3.0
+        val limPct = etSoftSniperLimitPct.text.toString().toDoubleOrNull() ?: 0.5
+        val minGain = etSoftSniperMinGainPct.text.toString().toDoubleOrNull() ?: 5.0
+        config.softSniperBufferPct = (bufPct / 100.0).coerceIn(0.005, 0.10)
+        config.softSniperLimitPct = (limPct / 100.0).coerceIn(0.0, 0.03)
+        config.softSniperMinGainPct = minGain.coerceIn(0.0, 50.0)
+
+        // Dynamic buffer tier configuration
+        val tightPct = etSoftSniperTightBufferPct.text.toString().toDoubleOrNull() ?: 1.5
+        val loosePct = etSoftSniperLooseBufferPct.text.toString().toDoubleOrNull() ?: 4.0
+        val volSpike = etSoftSniperVolSpikeMult.text.toString().toDoubleOrNull() ?: 1.30
+        val volWeak  = etSoftSniperVolWeakMult.text.toString().toDoubleOrNull() ?: 0.70
+        // Tight: 0.3–3% — must remain tighter than NORMAL (softSniperBufferPct).
+        // Loose: 1–10% — must remain wider than NORMAL.
+        // Spike: 1.05–3.0x. Weak: 0.2–0.95x. Coerce to safe ranges.
+        config.softSniperTightBufferPct = (tightPct / 100.0).coerceIn(0.003, 0.03)
+        config.softSniperLooseBufferPct = (loosePct / 100.0).coerceIn(0.01, 0.10)
+        config.softSniperVolumeSpikeMultiple = volSpike.coerceIn(1.05, 3.0)
+        config.softSniperVolumeWeakMultiple  = volWeak.coerceIn(0.2, 0.95)
+
+        // Trailing OCO target — defaults: ATR mult 2.0 (range 0.5–5.0),
+        // max daily step 8% (range 1–25%). Tighter than 1% would block almost
+        // every bump; wider than 25% defeats the anti-spike protection.
+        config.autoTrailingTargetEnabled = switchAutoTrailingTarget.isChecked
+        val tgtAtrMult = etTargetAtrMultiple.text.toString().toDoubleOrNull() ?: 2.0
+        val tgtMaxStep = etTargetMaxDailyStepPct.text.toString().toDoubleOrNull() ?: 8.0
+        config.targetAtrMultiple = tgtAtrMult.coerceIn(0.5, 5.0)
+        config.targetMaxDailyStepPct = (tgtMaxStep / 100.0).coerceIn(0.01, 0.25)
 
         // LLM settings
         config.openaiApiKey = etLlmApiKey.text.toString().trim()

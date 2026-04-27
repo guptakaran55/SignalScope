@@ -12,8 +12,6 @@ import kotlin.math.min
  */
 object StockAnalyzer {
 
-    private const val MIN_SLOPE_MAG = 0.01
-
     fun analyze(
         candles: List<CandleData>,
         symbol: String,
@@ -114,13 +112,35 @@ object StockAnalyzer {
         val macdSignalVal = macdResult.signalLine.last()
         val macdHistVal = macdResult.histogram.last()
 
+        // ── Adaptive MACD-watchdog filter ──
+        // Count peaks/troughs on the histogram within ±30% of 6-month amplitude,
+        // derive the stock's natural oscillation period, filter = period/3.
+        // Fast-cycling midcaps → small filter; slow large-caps → larger filter.
+        val hist6mo = macdResult.histogram.takeLast(126)
+        val minBarsFilterComputed: Int = run {
+            if (hist6mo.size < 20) return@run 6
+            val amp = (hist6mo.max()) - (hist6mo.min())
+            if (amp <= 0.0) return@run 6
+            val thr = amp * 0.30
+            var halfCycles = 0
+            for (i in 1 until hist6mo.size - 1) {
+                val p = hist6mo[i - 1]; val c = hist6mo[i]; val n = hist6mo[i + 1]
+                if (c > thr && c >= p && c >= n) halfCycles++      // peak
+                if (c < -thr && c <= p && c <= n) halfCycles++     // trough
+            }
+            if (halfCycles < 4) return@run 6
+            val naturalPeriod = 126.0 / (halfCycles / 2.0)
+            (naturalPeriod / 3.0).toInt().coerceIn(2, 20)
+        }
+
         // ── MACD Phase Detection ──
-        val wasNeg2d = macdSlopePrev <= -MIN_SLOPE_MAG && macdSlopePrev2 <= -MIN_SLOPE_MAG
-        val wasPos2d = macdSlopePrev >= MIN_SLOPE_MAG && macdSlopePrev2 >= MIN_SLOPE_MAG
+        val minSlopeMag = w.minSlopeMagnitude
+        val wasNeg2d = macdSlopePrev <= -minSlopeMag && macdSlopePrev2 <= -minSlopeMag
+        val wasPos2d = macdSlopePrev >= minSlopeMag && macdSlopePrev2 >= minSlopeMag
         val wasNegWeak = macdSlopePrev <= 0 && macdSlopePrev2 <= 0 &&
-                (abs(macdSlopePrev) + abs(macdSlopePrev2)) > MIN_SLOPE_MAG
+                (abs(macdSlopePrev) + abs(macdSlopePrev2)) > minSlopeMag
         val wasPosWeak = macdSlopePrev >= 0 && macdSlopePrev2 >= 0 &&
-                (abs(macdSlopePrev) + abs(macdSlopePrev2)) > MIN_SLOPE_MAG
+                (abs(macdSlopePrev) + abs(macdSlopePrev2)) > minSlopeMag
 
         val slopeCrossUp = macdSlope > 0 && (wasNeg2d || wasNegWeak)
         val slopeCrossDn = macdSlope < 0 && (wasPos2d || wasPosWeak)
@@ -213,7 +233,7 @@ object StockAnalyzer {
         buyScore += smaPts
 
         // 2. MACD Inflection
-        val goldenBuy = macdLowPct >= 60 && macdSlope <= 0.2 && sma200Slope > 0.1
+        val goldenBuy = macdLowPct >= 60 && macdSlope <= w.goldenBuyMaxSlope && sma200Slope > 0.1
         val macdInfPts = when {
             goldenBuy -> w.buyGoldenBuyPts
             macdZeroCrossUp && macdAccel > 0 -> w.buyMacdZeroCrossUpPts
@@ -322,6 +342,27 @@ object StockAnalyzer {
         }
         profitScore += bbProfitPts
 
+        // 4. OBV bearish divergence — distribution detection
+        // ──────────────────────────────────────────────────────────────────
+        // Two textbook patterns we care about during an uptrend:
+        //   STRONG: price at/near a new 5-day high but OBV is BELOW its 5-day avg
+        //           → smart money is selling into retail strength (classic top)
+        //   SOFT:   OBV is below its 20-day avg even if no new high
+        //           → longer-term distribution under the surface
+        // Both fire only as warnings; they don't gate BOOK_PROFIT alone.
+        val recent5High = if (closes.size >= 5)
+            closes.subList(closes.size - 5, closes.size).max()
+        else price
+        val priceAtNewHigh = price >= recent5High * w.profitObvNewHighProximityPct
+        val obvBearishDivergence = priceAtNewHigh && obvCurrent < obv5
+        val obvDistributionWeakness = obvCurrent < obv20
+        val obvProfitPts = when {
+            obvBearishDivergence -> w.profitObvDivergencePts
+            obvDistributionWeakness -> w.profitObvWeaknessPts
+            else -> 0
+        }
+        profitScore += obvProfitPts
+
         // ═══════════════════════════════════════════════════════
         // SUB-SCORE B: CAPITAL PROTECTION (max ~58 pts)
         // Intent: get out before structural damage — trend broken
@@ -411,6 +452,7 @@ object StockAnalyzer {
             macd1yLow = macd1yLow.round(2),
             macdPhase = macdPhase,
             macdCurve = macdCurve,
+            minBarsFilter = minBarsFilterComputed,
             adx = currAdx.round(2),
             plusDi = currPlusDi.round(1),
             minusDi = currMinusDi.round(1),
@@ -418,6 +460,7 @@ object StockAnalyzer {
             ema21 = ema21Val?.round(2),
             ema21PctDiff = ema21PctDiff,
             avgVol20 = avgVol20.round(0),
+            volume = volumes.lastOrNull()?.toDouble()?.round(0) ?: 0.0,
             priceVel = priceVel.round(2),
             priceAccel = priceAccelVal.round(3),
             priceRoc3 = roc3.round(2),
@@ -445,6 +488,8 @@ object StockAnalyzer {
             isModerateBuy = buyScore >= 60,
             isSell = sellIntent == "STRONG EXIT" || sellIntent == "PROTECT CAPITAL",
             isModerateSell = sellIntent == "BOOK PROFIT",
+            obvDivergence = obvBearishDivergence,
+            obvWeakness = obvDistributionWeakness,
             projectedCeiling = waveProjection?.projectedCeiling,
             projectedFloor = waveProjection?.projectedFloor,
             projectedMidpoint = waveProjection?.projectedMidpoint

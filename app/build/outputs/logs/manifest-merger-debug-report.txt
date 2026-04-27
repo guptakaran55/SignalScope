@@ -1,20 +1,20 @@
 -- Merging decision tree log ---
 provider#androidx.core.content.FileProvider
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:63:9-71:20
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:82:9-90:20
 	android:grantUriPermissions
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:67:13-47
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:86:13-47
 	android:authorities
 		INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:65:13-64
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:84:13-64
 	android:exported
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:66:13-37
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:85:13-37
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:64:13-62
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:83:13-62
 manifest
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-74:12
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-74:12
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-74:12
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-74:12
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-93:12
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-93:12
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-93:12
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:2:1-93:12
 MERGED from [androidx.databinding:viewbinding:9.1.1] C:\Users\gupta\.gradle\caches\9.3.1\transforms\d0296881fc35ddc293fd64651281fe69\workspace\transformed\viewbinding-9.1.1\AndroidManifest.xml:2:1-7:12
 MERGED from [com.google.android.material:material:1.11.0] C:\Users\gupta\.gradle\caches\9.3.1\transforms\4f0fee9f5128b695248f05faeb2f76e9\workspace\transformed\material-1.11.0\AndroidManifest.xml:17:1-24:12
 MERGED from [androidx.constraintlayout:constraintlayout:2.1.4] C:\Users\gupta\.gradle\caches\9.3.1\transforms\d72a3bdff142869da4a0c0918db07daa\workspace\transformed\constraintlayout-2.1.4\AndroidManifest.xml:2:1-11:12
@@ -124,9 +124,17 @@ uses-permission#android.permission.VIBRATE
 ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:11:5-66
 	android:name
 		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:11:22-63
+uses-permission#android.permission.ACCESS_WIFI_STATE
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:14:5-76
+	android:name
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:14:22-73
+uses-permission#android.permission.SCHEDULE_EXACT_ALARM
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:18:5-79
+	android:name
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:18:22-76
 application
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:13:5-73:19
-INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:13:5-73:19
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:20:5-92:19
+INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:20:5-92:19
 MERGED from [com.google.android.material:material:1.11.0] C:\Users\gupta\.gradle\caches\9.3.1\transforms\4f0fee9f5128b695248f05faeb2f76e9\workspace\transformed\material-1.11.0\AndroidManifest.xml:22:5-20
 MERGED from [com.google.android.material:material:1.11.0] C:\Users\gupta\.gradle\caches\9.3.1\transforms\4f0fee9f5128b695248f05faeb2f76e9\workspace\transformed\material-1.11.0\AndroidManifest.xml:22:5-20
 MERGED from [androidx.constraintlayout:constraintlayout:2.1.4] C:\Users\gupta\.gradle\caches\9.3.1\transforms\d72a3bdff142869da4a0c0918db07daa\workspace\transformed\constraintlayout-2.1.4\AndroidManifest.xml:9:5-20
@@ -154,91 +162,99 @@ MERGED from [androidx.startup:startup-runtime:1.1.1] C:\Users\gupta\.gradle\cach
 	android:appComponentFactory
 		ADDED from [androidx.core:core:1.12.0] C:\Users\gupta\.gradle\caches\9.3.1\transforms\153a3986a1bd825998b1ed081c698210\workspace\transformed\core-1.12.0\AndroidManifest.xml:28:18-86
 	android:supportsRtl
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:20:9-35
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:27:9-35
 	android:label
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:19:9-36
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:26:9-36
 	android:fullBackupContent
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:17:9-42
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:24:9-42
 	android:icon
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:18:9-43
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:25:9-43
 	android:allowBackup
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:15:9-35
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:22:9-35
 	android:theme
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:21:9-49
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:28:9-49
 	android:networkSecurityConfig
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:22:9-69
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:29:9-69
 	android:dataExtractionRules
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:16:9-56
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:23:9-56
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:14:9-39
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:21:9-39
 activity#com.signalscope.app.ui.PasswordActivity
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:24:9-32:20
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:31:9-39:20
 	android:screenOrientation
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:27:13-49
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:34:13-49
 	android:exported
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:26:13-36
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:33:13-36
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:25:13-48
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:32:13-48
 intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:28:13-31:29
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:35:13-38:29
 action#android.intent.action.MAIN
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:29:17-69
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:36:17-69
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:29:25-66
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:36:25-66
 category#android.intent.category.LAUNCHER
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:30:17-77
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:37:17-77
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:30:27-74
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:37:27-74
 activity#com.signalscope.app.ui.MainActivity
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:34:9-38:52
-	android:screenOrientation
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:38:13-49
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:45:9-49:90
 	android:launchMode
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:37:13-43
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:48:13-43
 	android:exported
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:36:13-37
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:47:13-37
+	android:configChanges
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:49:13-87
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:35:13-44
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:46:13-44
 activity#com.signalscope.app.ui.SettingsActivity
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:40:9-43:61
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:51:9-55:61
 	android:parentActivityName
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:43:13-58
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:55:13-58
 	android:exported
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:42:13-37
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:53:13-37
+	android:configChanges
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:54:13-87
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:41:13-48
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:52:13-48
 service#com.signalscope.app.service.ScanService
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:46:9-49:56
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:58:9-61:56
 	android:exported
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:48:13-37
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:60:13-37
 	android:foregroundServiceType
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:49:13-53
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:61:13-53
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:47:13-48
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:59:13-48
 receiver#com.signalscope.app.service.BootReceiver
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:52:9-60:20
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:64:9-72:20
 	android:enabled
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:55:13-35
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:67:13-35
 	android:exported
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:54:13-36
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:66:13-36
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:53:13-49
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:65:13-49
 intent-filter#action:name:android.intent.action.BOOT_COMPLETED+action:name:android.intent.action.QUICKBOOT_POWERON
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:56:13-59:29
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:68:13-71:29
 action#android.intent.action.BOOT_COMPLETED
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:57:17-79
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:69:17-79
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:57:25-76
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:69:25-76
 action#android.intent.action.QUICKBOOT_POWERON
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:58:17-82
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:70:17-82
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:58:25-79
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:70:25-79
+receiver#com.signalscope.app.service.AutoDiscoveryReceiver
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:77:9-79:40
+	android:exported
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:79:13-37
+	android:name
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:78:13-58
 meta-data#android.support.FILE_PROVIDER_PATHS
-ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:68:13-70:54
+ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:87:13-89:54
 	android:resource
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:70:17-51
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:89:17-51
 	android:name
-		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:69:17-67
+		ADDED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml:88:17-67
 uses-sdk
 INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml reason: use-sdk injection requested
 INJECTED from C:\Users\gupta\Downloads\SignalScopeAndroid\SignalScopeAndroid\app\src\main\AndroidManifest.xml

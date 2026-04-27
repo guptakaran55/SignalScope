@@ -223,29 +223,67 @@ object StockAiClient {
         ema21PctDiff: Double,
         macdPhase: String,
         profitScore: Int,
-        protectScore: Int
+        protectScore: Int,
+        rsi: Double? = null,
+        adx: Double? = null,
+        support: Double? = null,
+        resistance: Double? = null
     ): AiResult {
-        val headlines = fetchNewsHeadlines(symbol)
+        val headlines = fetchNewsHeadlines(symbol, 12)  // increased from 8 to 12 for richer context
         if (headlines.isEmpty()) {
             return AiResult.Error("No recent news found for $symbol")
         }
 
-        val system = """You are a stock market analyst. Analyze why a stock has pulled back significantly.
-Be concise (3-4 sentences max). Focus on the most probable cause from the news.
-Form your own independent opinion — do not assume any prior bullish or bearish bias.
-End with a one-word classification: TEMPORARY, STRUCTURAL, or UNCERTAIN."""
+        val system = """You are a stock market analyst. Analyze a deep pullback critically and independently.
+Form your own opinion based PRIMARILY on recent news (headlines appear in chronological order, most recent first).
+Do NOT assume the pullback is automatically a buying opportunity — critically assess both risks and opportunities.
+
+Evaluate whether this pullback is:
+• TEMPORARY: A healthy correction in an uptrend; news suggests a one-off event or overreaction
+• STRUCTURAL: Signs of fundamental weakness; news suggests deteriorating business/sector conditions
+• UNCERTAIN: Conflicting signals; need more confirmation before committing
+
+Prioritize recent news over older stories. Be concise (3-4 sentences max). If you're unsure, answer UNCERTAIN rather than guessing."""
+
+        val trendDesc = if (adx != null) {
+            "ADX = ${String.format("%.1f", adx)} (${if (adx > 25) "trending" else if (adx > 15) "emerging trend" else "choppy"})"
+        } else "Trend strength not available"
+
+        val rsiDesc = if (rsi != null) {
+            val status = when {
+                rsi < 30 -> "oversold — may bounce soon"
+                rsi < 50 -> "mid-range — pullback zone ideal"
+                rsi < 70 -> "near exhaustion — caution on further bounce"
+                else -> "overbought — unusual for a pullback"
+            }
+            "RSI = ${String.format("%.0f", rsi)} ($status)"
+        } else "RSI not available"
+
+        val srDesc = if (support != null && resistance != null) {
+            val priceVsSupport = ((price - support) / support * 100)
+            "Price is ${String.format("%.1f%%", priceVsSupport)} above support (₹${String.format("%.2f", support)})"
+        } else "Support/Resistance not available"
 
         val user = buildString {
             append("Stock: $symbol (NSE India)\n")
             append("Current price: ₹${String.format("%.2f", price)}\n")
-            append("Distance from EMA(21): ${String.format("%.1f", ema21PctDiff)}% (deep pullback)\n\n")
-            // NOTE: profitScore / protectScore / macdPhase are deliberately NOT passed to the LLM
-            // to avoid biasing the outlook with our own synthetic scores. The function signature
-            // keeps them for backward compat with MainActivity's JS bridge wiring.
-            append("Recent news headlines:\n")
-            headlines.forEachIndexed { i, h -> append("${i + 1}. $h\n") }
-            append("\nBased ONLY on the news above and publicly known facts about this company, ")
-            append("what is the most probable reason for this pullback? Is it temporary (buy the dip) or structural (avoid)?")
+            append("EMA(21) distance: ${String.format("%.1f", ema21PctDiff)}% (deep pullback trigger)\n")
+            append("MACD Phase: $macdPhase\n\n")
+
+            append("─ Technical Context ─\n")
+            append("$rsiDesc\n")
+            append("$trendDesc\n")
+            append("$srDesc\n\n")
+
+            append("─ Recent News Headlines (last 30 days) ─\n")
+            headlines.forEachIndexed { i, h -> append("[${i + 1}] $h\n") }
+
+            append("\nAnalyze critically:\n")
+            append("• Based on the news, what is the PRIMARY driver of this pullback?\n")
+            append("• Is this a temporary market overreaction or structural weakness?\n")
+            append("• What would need to happen for this to be a BUY vs AVOID?\n")
+            append("• If uncertain, say UNCERTAIN rather than guessing.\n")
+            append("\nProvide your verdict: TEMPORARY, STRUCTURAL, or UNCERTAIN.")
         }
 
         return callLlm(config, system, user)
@@ -270,46 +308,199 @@ End with a one-word classification: TEMPORARY, STRUCTURAL, or UNCERTAIN."""
         sma200: Double?,
         ema21PctDiff: Double,
         rrRatio: Double,
-        priceVel: Double
+        priceVel: Double,
+        isInPortfolio: Boolean = false
     ): AiResult {
-        val headlines = fetchNewsHeadlines(symbol, 10)
+        val headlines = fetchNewsHeadlines(symbol, 12)
+
+        // Allowed verdicts: HOLD is ONLY valid if the stock is currently in the user's portfolio.
+        // Otherwise the LLM must commit to a directional call (BUY / WATCH / AVOID / SELL).
+        val allowedVerdicts = if (isInPortfolio)
+            "STRONG BUY / BUY / HOLD / REDUCE / SELL"
+        else
+            "STRONG BUY / BUY / WATCH / AVOID"
+
+        val holdRule = if (isInPortfolio)
+            "HOLD is allowed because the user currently owns this stock."
+        else
+            "HOLD is NOT a valid verdict — the user does NOT own this stock, so you must commit to a directional call (BUY / WATCH / AVOID). Do not output HOLD under any circumstances."
+
+        val trendDesc = if (sma200 != null) {
+            val aboveBelow = if (price > sma200) "ABOVE" else "BELOW"
+            val pctFromSma = ((price - sma200) / sma200 * 100)
+            "Price is $aboveBelow SMA(200) by ${String.format("%.1f", kotlin.math.abs(pctFromSma))}% (SMA200 = ₹${String.format("%.2f", sma200)})"
+        } else "SMA(200) not available (short history)"
+
+        // MACD slope sign encodes momentum direction; macdPhase gives the qualitative phase.
+        val macdSlopeDir = when {
+            macdSlope > 0.01 -> "rising"
+            macdSlope < -0.01 -> "falling"
+            else -> "flat"
+        }
 
         val system = """You are a stock market analyst providing outlook summaries for Indian NSE stocks.
-Form your own independent opinion based on the news and publicly known fundamentals below.
-Do NOT assume any prior bullish or bearish bias — you are given only neutral market data and headlines.
+Form your own independent opinion based PRIMARILY on recent news and publicly known fundamentals.
+Headlines are listed in chronological order (most recent first) — prioritize those heavily over older news.
+Do NOT assume any prior bullish or bearish bias — you are only given trend (price vs SMA200), MACD phase, and headlines.
 
-Give a structured response with:
-1. SHORT TERM (1-4 weeks): Brief outlook based on standard technical indicators and recent news
-2. LONG TERM (3-12 months): Outlook based on fundamentals from news and trend indicators
-3. KEY RISKS: 1-2 bullet points
-4. VERDICT: One of: STRONG BUY / BUY / HOLD / REDUCE / SELL
+Give a structured response:
+1. SHORT TERM (1-4 weeks): News-driven outlook combined with the given MACD phase
+2. LONG TERM (3-12 months): Trend (price vs SMA200) + fundamental narrative from news
+3. KEY RISKS: 1-2 bullet points from recent developments
+4. VERDICT: One of: $allowedVerdicts
+
+$holdRule
 
 Keep each section to 2-3 sentences max. Be specific about price levels when possible."""
 
         val user = buildString {
             append("Stock: $symbol (NSE India)\n")
-            append("Price: ₹${String.format("%.2f", price)}\n\n")
-            append("── Standard Market Indicators ──\n")
-            // Neutral, publicly-computable indicators only. No app-generated verdicts.
-            if (rsi != null) append("RSI(14): ${String.format("%.1f", rsi)}\n")
-            if (sma200 != null) append("SMA(200): ₹${String.format("%.2f", sma200)} — price is ${if (price > sma200) "above" else "below"}\n")
-            append("EMA(21) distance: ${String.format("%.1f", ema21PctDiff)}%\n")
-            append("MACD slope: ${String.format("%.3f", macdSlope)}\n")
-            append("Daily velocity: ${String.format("%.2f", priceVel)}%\n\n")
+            append("Current Price: ₹${String.format("%.2f", price)}\n")
+            append("User currently owns this: ${if (isInPortfolio) "YES" else "NO"}\n\n")
+            append("── Minimal Technical Context ──\n")
+            append("Trend: $trendDesc\n")
+            append("MACD Phase: $macdPhase (slope $macdSlopeDir)\n\n")
             if (headlines.isNotEmpty()) {
-                append("── Recent News ──\n")
-                headlines.forEachIndexed { i, h -> append("${i + 1}. $h\n") }
+                append("── Recent News Headlines (prioritize items from the last 30 days) ──\n")
+                headlines.forEachIndexed { i, h -> append("[${i + 1}] $h\n") }
             } else {
-                append("(No recent news available — rely on general market knowledge of this company)\n")
+                append("(No recent news available via Google News RSS — rely on general market knowledge of this company, and note the absence of news in your response)\n")
             }
-            append("\nBased ONLY on the data above and publicly known fundamentals, ")
-            append("provide short-term and long-term outlook with verdict. ")
-            append("Do not assume any prior app-generated scoring or recommendation.")
+            append("\nBased on the above, provide the structured outlook. ")
+            append("Cite headline numbers inline where relevant. ")
+            if (!isInPortfolio) {
+                append("Remember: HOLD is NOT a valid verdict here. ")
+            }
+            append("Do not reference any app-generated scoring.")
         }
-        // NOTE: buyScore / profitScore / protectScore / sellIntent / rrRatio / macdPhase parameters
-        // are deliberately NOT used in the prompt — they are app-generated synthetic verdicts that
-        // would bias the LLM. The function signature keeps them for backward compat with the JS
-        // bridge in MainActivity (Kotlin does not warn on unused function parameters).
+        // NOTE: buyScore / profitScore / protectScore / sellIntent / rrRatio / rsi / ema21PctDiff /
+        // priceVel parameters are deliberately NOT passed to the LLM — per the LLM-outlook rework:
+        // keep context minimal (trend + MACD phase + news), drop RSI/EMA21/velocity/ADX/OBV/BB.
+        // The params remain in the signature for backward compat with the JS bridge in MainActivity.
+
+        return callLlm(config, system, user)
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // FEATURE 3: FOLLOW-UP QUESTIONS ABOUT COMPANY
+    // User asks additional questions with headline context
+    // ═══════════════════════════════════════════════════════
+
+    fun askFollowUpQuestion(
+        config: ConfigManager,
+        symbol: String,
+        userQuestion: String,
+        price: Double,
+        previousAnalysis: String = ""
+    ): AiResult {
+        // Fetch broader set of headlines for deeper company context
+        val headlines = fetchNewsHeadlines(symbol, maxResults = 20)
+
+        if (headlines.isEmpty()) {
+            return AiResult.Error("No recent news found. Unable to answer questions about $symbol fundamentals.")
+        }
+
+        val system = """You are a stock market analyst with deep company knowledge.
+Use the provided news headlines to answer specific questions about a company's fundamentals,
+competitive position, sector trends, revenue/earnings outlook, and business dynamics.
+
+Headlines are listed in chronological order (most recent first) — prioritize recent news heavily.
+If a question cannot be answered from the available news, say so explicitly.
+Keep answers concise (2-3 sentences) unless asked for more detail."""
+
+        val user = buildString {
+            append("Stock: $symbol (NSE India)\n")
+            append("Current Price: ₹${String.format("%.2f", price)}\n\n")
+
+            if (previousAnalysis.isNotEmpty()) {
+                append("─ Previous Pullback Analysis ─\n")
+                append(previousAnalysis + "\n\n")
+            }
+
+            append("─ Company News Headlines (last 30 days) ─\n")
+            headlines.forEachIndexed { i, h -> append("[${i + 1}] $h\n") }
+
+            append("\n─ Your Question ─\n")
+            append(userQuestion)
+            append("\n\nAnswer based ONLY on the news provided above. Cite headline numbers inline.")
+        }
+
+        return callLlm(config, system, user)
+    }
+
+    // ── Deep Pullback Batch Analyser ────────────────────────────────────────────
+    // Called from MainActivity.analyseDeepPullbacks() via the JS bridge.
+    // stocksJson: JSON array of objects with fields:
+    //   { symbol, name, price, rsi, macdPhase, macdHist, ema21PctDiff, atr,
+    //     support, resistance, buyScore, buySignal, sma200, adx, minBarsFilter }
+    // Returns a formatted markdown table with entry quality scores.
+    fun analyseDeepPullbackBatch(config: ConfigManager, stocksJson: String): AiResult {
+        val arr = try {
+            org.json.JSONArray(stocksJson)
+        } catch (e: Exception) {
+            return AiResult.Error("Invalid JSON payload: ${e.message}")
+        }
+
+        if (arr.length() == 0) return AiResult.Error("No stocks to analyse")
+
+        val system = """You are an expert Indian stock market trader specialising in pullback entries on momentum stocks.
+You will be given a batch of NSE stocks that have passed a 'deep pullback' technical filter.
+Your job is to score each stock's current entry quality from 1 to 10 and give a brief rationale.
+
+Scoring guide:
+  9-10 → STRONG entry: multiple confluence signals, risk/reward clearly favourable
+  6-8  → MODERATE entry: good setup but one or two concerns (RSI still falling, MACD not yet hooking, etc.)
+  3-5  → WEAK entry: premature — pullback may not be complete, or momentum fading fast
+  1-2  → AVOID: broken structure, RSI deeply oversold without stabilisation, or extreme MACD deterioration
+
+Key factors to weigh (in priority order):
+1. RSI: <35 = still falling risk; 35-48 = pullback zone ideal; near 48 = nearing exhaustion of pullback
+2. MACD Phase + Histogram: 'EARLY BUY' or 'BUY FLIP' phase with hist turning less-negative = confirming;
+   still deeply negative hist = caution
+3. EMA21 gap: between −2% and −6% is sweet spot; beyond −8% = extended, wait for stabilisation
+4. Support proximity: if price is near support, risk is defined — reward ema21PctDiff tells you upside to EMA mean-reversion
+5. ADX: <20 = weak trend, pullback in choppy market; 20-40 = healthy; >40 = strong trend pullback (best)
+6. minBarsFilter (Speed): lower = faster stock, pullbacks resolve quicker; higher = slower, need more patience
+7. buyScore: app-generated composite score — treat as secondary signal, not primary
+
+Output a markdown table with these EXACT columns (no extra text before or after):
+| Symbol | Score | Verdict | Rationale |
+
+Verdict must be exactly one of: STRONG ENTRY / MODERATE ENTRY / WEAK ENTRY / AVOID
+
+After the table, add a short paragraph (2-3 sentences) summarising the batch — which themes you see across the pullbacks, and whether this is a broad market pullback or stock-specific.
+
+Be direct and opinionated. Do NOT hedge excessively."""
+
+        val user = buildString {
+            append("Batch Deep Pullback Analysis — ${arr.length()} stocks\n\n")
+            append("Format each row with real analysis. Do not just echo the numbers.\n\n")
+            append("| Symbol | Price | RSI | MACD Phase | MACD Hist | EMA21 Gap | Support | Resistance | ATR | ADX | Speed(bars) | BuyScore | BuySignal |\n")
+            append("|--------|-------|-----|------------|-----------|-----------|---------|------------|-----|-----|-------------|----------|-----------|\n")
+
+            for (i in 0 until arr.length()) {
+                val s = arr.getJSONObject(i)
+                fun d(key: String, decimals: Int = 2): String {
+                    val v = s.optDouble(key, Double.NaN)
+                    return if (v.isNaN()) "—" else String.format("%.${decimals}f", v)
+                }
+                append("| ${s.optString("symbol", "?")} ")
+                append("| ₹${d("price")} ")
+                append("| ${d("rsi", 1)} ")
+                append("| ${s.optString("macdPhase", "?")} ")
+                append("| ${d("macdHist")} ")
+                append("| ${d("ema21PctDiff", 1)}% ")
+                append("| ₹${d("support")} ")
+                append("| ₹${d("resistance")} ")
+                append("| ${d("atr")} ")
+                append("| ${d("adx", 1)} ")
+                append("| ${s.optInt("minBarsFilter", 5)} ")  // 5 = sensible default if AST didn't provide one
+                append("| ${d("buyScore", 1)} ")
+                append("| ${s.optString("buySignal", "?")} |\n")
+            }
+
+            append("\nAnalyse each stock using the scoring guide and output the results table followed by the batch summary paragraph.")
+        }
 
         return callLlm(config, system, user)
     }

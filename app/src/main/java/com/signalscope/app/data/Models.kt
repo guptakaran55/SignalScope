@@ -72,6 +72,11 @@ data class StockAnalysis(
     val macdPhase: String,
     val macdCurve: List<Double> = emptyList(),
 
+    // Adaptive MACD-watchdog time filter (days). Derived from each stock's
+    // 6-month histogram oscillation period. Fast midcaps → 3; slow large-caps → 15+.
+    // See MacdExitWatchdog.kt for the derivation formula.
+    val minBarsFilter: Int = 6,
+
     val adx: Double,
     val plusDi: Double,
     val minusDi: Double,
@@ -80,6 +85,10 @@ data class StockAnalysis(
     val ema21: Double?,
     val ema21PctDiff: Double,
     val avgVol20: Double,
+
+    // Today's (most-recent candle) raw volume — needed by the dynamic Soft Sniper
+    // buffer to confirm "volume spike" vs "thin trade" at GTT-placement time.
+    val volume: Double = 0.0,
 
     val priceVel: Double,
     val priceAccel: Double,
@@ -117,6 +126,12 @@ data class StockAnalysis(
     val isSell: Boolean,
     val isModerateSell: Boolean,
 
+    // ── OBV bearish divergence flags (feed BOOK_PROFIT score + UI distribution chip) ──
+    // obvDivergence: price at/near 5-day high but OBV < OBV5 (strong: smart money exiting)
+    // obvWeakness:   OBV < OBV20 (soft: longer-term distribution under the surface)
+    val obvDivergence: Boolean = false,
+    val obvWeakness: Boolean = false,
+
     // ── Value Analysis (fundamental) ──
     val trailingPe: Double? = null,
     val priceToBook: Double? = null,
@@ -153,6 +168,8 @@ enum class AlertType {
     BOOK_PROFIT,        // profitScore ≥ 35 AND protectScore < 35 — sell 50-70%, trail rest
     PROTECT_CAPITAL,    // protectScore ≥ 35 AND profitScore < 35 — sell all, trend broken
     PEAK_WARNING,       // earlySell (MACD decelerating) — prepare to sell soon
+    MACD_FLIP,          // DPM histogram-watchdog confirmed at 15:20 — sniper GTT / exit ladder fired
+    SOFT_SNIPER,        // Tier 1.5 — auto-GTT placed on BOOK_PROFIT alert (intraday, 3% buffer)
 
     // Buy alerts
     GOLDEN_BUY,
